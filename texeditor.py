@@ -21,12 +21,14 @@ import re
 import shutil
 import sys
 
-from PySide6.QtCore import (QBuffer, QByteArray, QDir, QFile, QFileSystemWatcher,
-                            QIODevice, QPointF, QProcess, QProcessEnvironment,
-                            QRect, QRegularExpression, QSettings, QSize,
-                            QSortFilterProxyModel, Qt, QTimer, QUrl)
+from PySide6.QtCore import (QBuffer, QByteArray, QDir, QEvent, QFile,
+                            QFileSystemWatcher, QIODevice, QPointF, QProcess,
+                            QProcessEnvironment, QRect, QRectF,
+                            QRegularExpression, QSettings, QSize,
+                            QSortFilterProxyModel, Qt, QTimer, QUrl, Signal)
 from PySide6.QtGui import (QAction, QColor, QDesktopServices, QFont,
-                           QFontDatabase, QKeySequence, QPainter,
+                           QFontDatabase, QGuiApplication, QKeySequence,
+                           QPainter, QPen,
                            QSyntaxHighlighter, QTextCharFormat, QTextCursor,
                            QTextFormat)
 from PySide6.QtPdf import QPdfDocument
@@ -182,6 +184,9 @@ class CodeEditor(QPlainTextEdit):
         self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * 2)
         self.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self.error_lines = set()
+        self.sync_line = None            # line highlighted from the PDF (1-based)
+        self._sync_timer = QTimer(self, singleShot=True)
+        self._sync_timer.timeout.connect(self.clear_sync_line)
 
         self.number_area = LineNumberArea(self)
         self.blockCountChanged.connect(self._update_margin)
@@ -235,6 +240,7 @@ class CodeEditor(QPlainTextEdit):
             num += 1
 
     def _highlight_current_line(self):
+        sels = []
         sel = QTextEdit.ExtraSelection()
         c = self.palette().highlight().color()
         c.setAlpha(35)
@@ -242,7 +248,45 @@ class CodeEditor(QPlainTextEdit):
         sel.format.setProperty(QTextFormat.FullWidthSelection, True)
         sel.cursor = self.textCursor()
         sel.cursor.clearSelection()
-        self.setExtraSelections([sel])
+        sels.append(sel)
+        if self.sync_line:
+            block = self.document().findBlockByNumber(self.sync_line - 1)
+            if block.isValid():
+                hl = QTextEdit.ExtraSelection()
+                hl.format.setBackground(QColor(255, 196, 0, 110))
+                hl.format.setProperty(QTextFormat.FullWidthSelection, True)
+                hl.cursor = QTextCursor(block)
+                hl.cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)  # cover wrapped lines too
+                sels.append(hl)
+        self.setExtraSelections(sels)
+
+    def show_sync_line(self, line, flash_ms=0):
+        """Highlight a source line (from the PDF) and scroll it into view without moving the cursor."""
+        self.sync_line = max(1, line)
+        self._sync_timer.stop()
+        if flash_ms:
+            self._sync_timer.start(flash_ms)
+        self._highlight_current_line()
+        block = self.document().findBlockByNumber(self.sync_line - 1)
+        if not block.isValid():
+            return
+        geo = self.blockBoundingGeometry(block).translated(self.contentOffset())
+        vp = self.viewport().rect()
+        if geo.top() >= vp.top() and geo.bottom() <= vp.bottom():
+            return  # already visible
+        # QPlainTextEdit scrolls in layout lines: count the lines above the block, then centre it.
+        lines_above = 0
+        b = self.document().firstBlock()
+        while b.isValid() and b.blockNumber() < block.blockNumber():
+            lines_above += max(1, b.lineCount()) if b.isVisible() else 0
+            b = b.next()
+        visible_lines = max(1, int(vp.height() / max(1, self.fontMetrics().lineSpacing())))
+        self.verticalScrollBar().setValue(max(0, lines_above - visible_lines // 2))
+
+    def clear_sync_line(self):
+        if self.sync_line is not None:
+            self.sync_line = None
+            self._highlight_current_line()
 
     def set_error_lines(self, lines):
         self.error_lines = set(lines)
@@ -317,7 +361,46 @@ class HideAuxProxy(QSortFilterProxyModel):
 # --------------------------------------------------------------------------- #
 #  PDF preview
 # --------------------------------------------------------------------------- #
+class PdfOverlay(QWidget):
+    """Transparent layer over the PDF that draws SyncTeX highlight boxes."""
+
+    def __init__(self, preview):
+        super().__init__(preview.view.viewport())
+        self.preview = preview
+        self.box = None            # (page, QRectF in PDF points)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self._timer = QTimer(self, singleShot=True)
+        self._timer.timeout.connect(self.clear)
+
+    def flash(self, page, rect, ms=2500):
+        self.box = (page, rect)
+        self._timer.start(ms)
+        self.raise_()
+        self.update()
+
+    def clear(self):
+        self.box = None
+        self.update()
+
+    def paintEvent(self, _e):
+        if not self.box:
+            return
+        r = self.preview.points_to_viewport(*self.box)
+        if r is None:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(230, 150, 0), 2))
+        p.setBrush(QColor(255, 196, 0, 70))
+        p.drawRoundedRect(r.adjusted(-3, -3, 3, 3), 3, 3)
+
+
 class PdfPreview(QWidget):
+    # page (0-based), x, y in PDF points from the top-left, jump (True = Ctrl+click, False = hover)
+    sourceRequested = Signal(int, float, float, bool)
+    hoverLeft = Signal()
+
     def __init__(self):
         super().__init__()
         self.doc = QPdfDocument(self)
@@ -336,6 +419,12 @@ class PdfPreview(QWidget):
             a.triggered.connect(slot)
             bar.addAction(a)
         bar.addSeparator()
+        self.track_action = QAction("Highlight source", self)
+        self.track_action.setCheckable(True)
+        self.track_action.setToolTip("Highlight source: point at the PDF to highlight the matching line "
+                                     "in the editor.\nCtrl+click on the PDF jumps to that line (always available).")
+        bar.addAction(self.track_action)
+        bar.addSeparator()
         bar.addWidget(self.page_label)
 
         lay = QVBoxLayout(self)
@@ -344,8 +433,118 @@ class PdfPreview(QWidget):
         lay.addWidget(bar)
         lay.addWidget(self.view)
 
+        self.overlay = PdfOverlay(self)
+        vp = self.view.viewport()
+        vp.setMouseTracking(True)
+        vp.installEventFilter(self)
+        self.view.verticalScrollBar().valueChanged.connect(self.overlay.update)
+        self.view.horizontalScrollBar().valueChanged.connect(self.overlay.update)
+
+        self._hover_pos = None
+        self._hover_timer = QTimer(self, singleShot=True, interval=120)
+        self._hover_timer.timeout.connect(self._emit_hover)
+
         self.view.pageNavigator().currentPageChanged.connect(self._update_label)
         self.doc.pageCountChanged.connect(self._update_label)
+
+    # ---- page geometry (mirrors QPdfView's own layout code, which it doesn't expose)
+    def _page_rects(self):
+        """List of (QRect in document pixels, QSizeF page size in points) per page."""
+        v, doc = self.view, self.doc
+        n = doc.pageCount()
+        if n <= 0:
+            return []
+        res = QGuiApplication.primaryScreen().logicalDotsPerInch() / 72.0
+        m = v.documentMargins()
+        vp = v.viewport().size()
+        mode = v.zoomMode()
+        sizes = []
+        for i in range(n):
+            pts = doc.pagePointSize(i)
+            w, h = int(pts.width() * res + 0.5), int(pts.height() * res + 0.5)
+            if mode == QPdfView.ZoomMode.FitToWidth:
+                f = (vp.width() - m.left() - m.right()) / max(1, w)
+                w, h = int(w * f + 0.5), int(h * f + 0.5)
+            elif mode == QPdfView.ZoomMode.FitInView:
+                s = QSize(w, h).scaled(QSize(vp.width() - m.left() - m.right(), vp.height() - v.pageSpacing()),
+                                       Qt.KeepAspectRatio)
+                w, h = s.width(), s.height()
+            else:
+                z = v.zoomFactor()
+                w, h = int(pts.width() * res * z + 0.5), int(pts.height() * res * z + 0.5)
+            sizes.append((w, h, pts))
+        total_w = max(w for w, _h, _p in sizes) + m.left() + m.right()
+        y = m.top()
+        rects = []
+        for w, h, pts in sizes:
+            x = (max(total_w, vp.width()) - w) // 2
+            rects.append((QRect(x, y, w, h), pts))
+            y += h + v.pageSpacing()
+        return rects
+
+    def viewport_to_points(self, pos):
+        """Viewport position -> (page, x_pt, y_pt), or None if not over a page."""
+        dx = pos.x() + self.view.horizontalScrollBar().value()
+        dy = pos.y() + self.view.verticalScrollBar().value()
+        for page, (r, pts) in enumerate(self._page_rects()):
+            if r.top() <= dy <= r.bottom() + 1 and r.left() <= dx <= r.right() + 1:
+                return (page, (dx - r.left()) * pts.width() / r.width(),
+                        (dy - r.top()) * pts.height() / r.height())
+        return None
+
+    def points_to_viewport(self, page, rect):
+        """QRectF in PDF points on a page -> QRectF in viewport pixels."""
+        rects = self._page_rects()
+        if not 0 <= page < len(rects):
+            return None
+        r, pts = rects[page]
+        sx, sy = r.width() / pts.width(), r.height() / pts.height()
+        ox = r.left() - self.view.horizontalScrollBar().value()
+        oy = r.top() - self.view.verticalScrollBar().value()
+        return QRectF(ox + rect.x() * sx, oy + rect.y() * sy, rect.width() * sx, rect.height() * sy)
+
+    # ---- mouse handling on the PDF
+    def eventFilter(self, obj, e):
+        t = e.type()
+        if t == QEvent.Wheel:
+            mods = e.modifiers()
+            if mods & Qt.ControlModifier:                       # Ctrl+wheel: zoom
+                d = e.angleDelta().y()
+                if d:
+                    self.zoom_in() if d > 0 else self.zoom_out()
+                return True
+            if mods & Qt.ShiftModifier:                          # Shift+wheel: scroll sideways
+                hbar = self.view.horizontalScrollBar()
+                px = e.pixelDelta()
+                if not px.isNull():
+                    d = px.y() or px.x()
+                else:
+                    a = e.angleDelta()
+                    d = (a.y() or a.x()) / 120 * QApplication.wheelScrollLines() * 20
+                hbar.setValue(int(hbar.value() - d))
+                return True
+        elif t == QEvent.MouseButtonPress and e.button() == Qt.LeftButton and e.modifiers() & Qt.ControlModifier:
+            hit = self.viewport_to_points(e.position().toPoint())
+            if hit:
+                self.sourceRequested.emit(hit[0], hit[1], hit[2], True)
+            return True
+        elif t == QEvent.MouseMove and self.track_action.isChecked():
+            self._hover_pos = e.position().toPoint()
+            self._hover_timer.start()
+        elif t == QEvent.Leave:
+            self._hover_timer.stop()
+            if self.track_action.isChecked():
+                self.hoverLeft.emit()
+        elif t == QEvent.Resize:
+            self.overlay.setGeometry(obj.rect())
+        return super().eventFilter(obj, e)
+
+    def _emit_hover(self):
+        if self._hover_pos is None or not self.track_action.isChecked():
+            return
+        hit = self.viewport_to_points(self._hover_pos)
+        if hit:
+            self.sourceRequested.emit(hit[0], hit[1], hit[2], False)
 
     def _update_label(self, *_):
         n = self.doc.pageCount()
@@ -354,6 +553,7 @@ class PdfPreview(QWidget):
 
     def clear(self):
         self.doc.close()
+        self.overlay.clear()
         self._update_label()
 
     def load(self, path):
@@ -379,13 +579,25 @@ class PdfPreview(QWidget):
     def jump_to(self, page, x, y):
         self.view.pageNavigator().jump(page, QPointF(x, max(0.0, y - 40)), self.view.zoomFactor())
 
-    def zoom_in(self):
+    def _effective_zoom(self):
+        """The zoom level actually on screen (in Fit modes QPdfView's zoomFactor isn't updated)."""
+        rects = self._page_rects()
+        if not rects:
+            return self.view.zoomFactor()
+        r, pts = rects[0]
+        res = QGuiApplication.primaryScreen().logicalDotsPerInch() / 72.0
+        return r.width() / (pts.width() * res)
+
+    def _set_zoom(self, z):
+        self.view.setZoomFactor(min(8.0, max(0.1, z)))
         self.view.setZoomMode(QPdfView.ZoomMode.Custom)
-        self.view.setZoomFactor(self.view.zoomFactor() * 1.2)
+        self.overlay.update()
+
+    def zoom_in(self):
+        self._set_zoom(self._effective_zoom() * 1.2)
 
     def zoom_out(self):
-        self.view.setZoomMode(QPdfView.ZoomMode.Custom)
-        self.view.setZoomFactor(self.view.zoomFactor() / 1.2)
+        self._set_zoom(self._effective_zoom() / 1.2)
 
     def fit_width(self):
         self.view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
@@ -507,6 +719,14 @@ class MainWindow(QMainWindow):
 
         # ---- preview, problems, log
         self.preview = PdfPreview()
+        self.preview.sourceRequested.connect(self.inverse_search)
+        self.preview.hoverLeft.connect(self._hover_left)
+        self.preview.track_action.setChecked(self.settings.value("trackSource", "false") == "true")
+        self.preview.track_action.toggled.connect(self._track_toggled)
+        self._inv_proc = None
+        self._inv_pending = None
+        self._hover_clear_timer = QTimer(self, singleShot=True, interval=1500)
+        self._hover_clear_timer.timeout.connect(self._clear_sync_highlights)
         self.log = QPlainTextEdit(readOnly=True)
         self.log.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         self.issues = QListWidget()
@@ -1390,9 +1610,83 @@ class MainWindow(QMainWindow):
             x = re.search(r"^x:([\d.]+)", out, re.M)
             y = re.search(r"^y:([\d.]+)", out, re.M)
             if page and y:
-                self.preview.jump_to(int(page[1]) - 1, float(x[1]) if x else 0.0, float(y[1]))
+                pg = int(page[1]) - 1
+                self.preview.jump_to(pg, float(x[1]) if x else 0.0, float(y[1]))
+                box = [re.search(rf"^{k}:(-?[\d.]+)", out, re.M) for k in ("h", "v", "W", "H")]
+                if all(box):
+                    h, v, bw, bh = (float(b[1]) for b in box)
+                    if bw > 0 and bh > 0:
+                        # (h, v) is the left end of the baseline; the box extends up by H
+                        QTimer.singleShot(50, lambda: self.preview.overlay.flash(pg, QRectF(h, v - bh, bw, bh)))
                 return
         self.status.showMessage("No SyncTeX match for this line (is this file part of the main document?)", 4000)
+
+    def _track_toggled(self, on):
+        self.settings.setValue("trackSource", "true" if on else "false")
+        if not on:
+            self._clear_sync_highlights()
+
+    def _hover_left(self):
+        self._inv_pending = None
+        self._hover_clear_timer.start()
+
+    def _clear_sync_highlights(self):
+        for i in range(self.tabs.count()):
+            self.tabs.widget(i).clear_sync_line()
+
+    def inverse_search(self, page, x, y, jump):
+        """PDF position -> source line (SyncTeX). Runs in the background; the latest request wins."""
+        if not self.main or not shutil.which("synctex"):
+            if jump:
+                self.status.showMessage("SyncTeX unavailable (compile the project first)", 3000)
+            return
+        self._hover_clear_timer.stop()
+        req = (page, x, y, jump)
+        if self._inv_proc and self._inv_proc.state() != QProcess.NotRunning:
+            self._inv_pending = req
+            return
+        pdf = self._pdf_path()
+        p = QProcess(self)
+        p.setWorkingDirectory(os.path.dirname(self.main))
+        p.finished.connect(lambda *_a, p=p, req=req: self._inverse_done(p, req))
+        self._inv_proc = p
+        p.start("synctex", ["edit", "-o", f"{page + 1}:{x:.2f}:{y:.2f}:{pdf}"])
+
+    def _inverse_done(self, p, req):
+        out = bytes(p.readAllStandardOutput()).decode(errors="replace")
+        if self._inv_proc is p:
+            self._inv_proc = None
+        p.deleteLater()
+        pending, self._inv_pending = self._inv_pending, None
+        if pending:  # the mouse moved on while synctex ran; answer the newest position instead
+            self.inverse_search(*pending)
+            return
+        _page, _x, _y, jump = req
+        inp = re.search(r"^Input:(.+)$", out, re.M)
+        line = re.search(r"^Line:(-?\d+)", out, re.M)
+        if not inp or not line:
+            if jump:
+                self.status.showMessage("No source found for that spot in the PDF", 3000)
+            return
+        path = os.path.normpath(os.path.join(os.path.dirname(self.main), inp[1].strip()))
+        if not os.path.isfile(path):
+            return
+        ln = max(1, int(line[1]))
+        if jump:
+            ed = self.open_in_editor(path, ln)
+            if ed:
+                ed.show_sync_line(ln, flash_ms=1500)
+        else:
+            ed = self.find_editor(path)
+            if ed is None or self.tabs.currentWidget() is not ed:
+                ed = self.open_in_editor(path)
+            if ed:
+                ed.show_sync_line(ln)
+                for i in range(self.tabs.count()):
+                    if self.tabs.widget(i) is not ed:
+                        self.tabs.widget(i).clear_sync_line()
+            rel = os.path.relpath(path, self.root) if self.root else os.path.basename(path)
+            self.status.showMessage(f"PDF ↔ {rel}:{ln}", 2000)
 
     # ------------------------------------------------------------------ close
     def closeEvent(self, e):

@@ -5,6 +5,15 @@ Write upcoming changes under **Unreleased**; `release.ps1` turns that section in
 
 ## [Unreleased]
 
+### Added
+- **Highlight source** button on the PDF toolbar: point at the PDF and the matching line is highlighted in the editor (switching tabs if it's in another file).
+- `Ctrl+click` on the PDF jumps to that line in the editor.
+- *Sync PDF to Cursor* (`Ctrl+J`) now outlines the matching text in the PDF for a moment.
+- `Shift` + mouse wheel scrolls the PDF sideways when zoomed in; `Ctrl` + mouse wheel zooms.
+
+### Fixed
+- Zooming in or out from *Fit width* / *Fit page* now continues from the current size instead of jumping to 100%.
+
 ## [1.0.1] - 2026-10-22
 
 ### Fixed

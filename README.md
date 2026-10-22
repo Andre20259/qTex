@@ -21,7 +21,7 @@ Windows may say *"Windows protected your PC"* the first time, because the app is
 - **Live preview.** The PDF recompiles shortly after you stop typing, in any file, and keeps its scroll position.
 - **No Perl or latexmk needed.** The built-in build runs LaTeX, BibTeX or Biber, makeindex, and reruns LaTeX until references settle. latexmk is optional.
 - **Problems panel.** Errors and warnings with the file and line they came from. Click one to jump there.
-- **SyncTeX.** `Ctrl+J` scrolls the PDF to where the cursor's line appears.
+- **SyncTeX, both ways.** `Ctrl+J` shows where the cursor's line is in the PDF. Turn on *Highlight source* and point at the PDF to see the matching source line highlighted, or `Ctrl+click` to jump there.
 - pdflatex, xelatex or lualatex; syntax highlighting; line numbers; comment toggling; file management in the tree; open tabs restored per project.
 
 ## Using QTeX
@@ -31,6 +31,8 @@ Windows may say *"Windows protected your PC"* the first time, because the app is
 - **`% !TEX root = ../main.tex`** at the top of a chapter is honoured: opening that chapter opens its whole project. New `.tex` files get this line automatically.
 - **Compile** (`Ctrl+Enter`) saves every modified tab and always builds the main file, whichever tab you're in. With *Live* on, it recompiles 1.5 s after you stop typing.
 - **Problems** lists errors and warnings with their file (`chapters/intro.tex:10`). Click one to open that file at that line. Error lines are also marked red in the gutter. Tick *Box warnings* to include over/underfull boxes.
+- **PDF ↔ source.** *Sync PDF to Cursor* (`Ctrl+J`) scrolls the PDF to the cursor's line and outlines it. The **Highlight source** button on the PDF toolbar highlights the source line under your mouse as you move over the PDF. `Ctrl+click` in the PDF jumps to that line. Both work across all files in the project.
+- **PDF navigation.** Mouse wheel scrolls, `Shift` + wheel scrolls sideways (when zoomed in), `Ctrl` + wheel zooms.
 - **Right-click in the tree** to create files and folders, rename, delete (to the recycle bin), copy a path relative to the main file (for `\input`/`\includegraphics`), or show it in Explorer. Images and other non-text files open in your default app.
 - Open tabs, engine and main file are restored when you reopen a project. *File → Recent Projects* lists the last ten.
 - Files changed by another program reload automatically if you have no unsaved edits in them.
@@ -47,6 +49,8 @@ Tick **latexmk** in the toolbar to use latexmk instead. MiKTeX's latexmk needs P
 |---|---|
 | Compile | `Ctrl+Enter` |
 | Sync PDF to cursor | `Ctrl+J` |
+| Jump from PDF to source | `Ctrl+click` in the PDF |
+| Scroll PDF sideways / zoom PDF | `Shift` + wheel / `Ctrl` + wheel |
 | Open folder / file | `Ctrl+Shift+O` / `Ctrl+O` |
 | New file | `Ctrl+N` |
 | Save / Save all | `Ctrl+S` / `Ctrl+Alt+S` |
