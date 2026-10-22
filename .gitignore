@@ -1,0 +1,30 @@
+# Build output (made by build.bat / build.ps1)
+build/
+dist/
+installer/
+release-notes.md
+
+# Python
+.venv*/
+venv/
+__pycache__/
+*.py[cod]
+
+# LaTeX files from testing the editor
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
+*.pdf
+
+# Editors and OS clutter
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

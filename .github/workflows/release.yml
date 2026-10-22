@@ -1,0 +1,101 @@
+# Builds QTeX on Windows and publishes a GitHub Release.
+#
+# - Pushing a tag like v1.2.0 builds the installer and portable zip and attaches them
+#   to a new release. The release notes come from that version's section in CHANGELOG.md.
+#   (release.ps1 makes the tag for you.)
+# - "Run workflow" on the Actions tab builds without releasing; the files are kept as
+#   a downloadable artifact of that run, which is handy for testing.
+
+name: Build and release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create the release
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $m = Select-String -LiteralPath texeditor.py -Pattern 'APP_VERSION\s*=\s*"([^"]+)"'
+          if (-not $m) { throw "APP_VERSION not found in texeditor.py" }
+          $v = $m.Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "Version $v"
+
+      - name: Check the tag matches APP_VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $expected = "v${{ steps.version.outputs.version }}"
+          if ($tag -ne $expected) {
+            throw "Tag $tag doesn't match APP_VERSION in texeditor.py ($expected). Use release.ps1 to make releases."
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (Test-Path -LiteralPath $iscc) { Write-Host "Inno Setup already installed" }
+          else { choco install innosetup -y --no-progress }
+
+      - name: Build app, portable zip and installer
+        shell: pwsh
+        run: ./build.ps1
+
+      - name: Keep build files (manual runs)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: QTeX-${{ steps.version.outputs.version }}-windows
+          path: |
+            installer/QTeX-Setup-*.exe
+            installer/QTeX-*-portable.zip
+
+      - name: Write release notes from CHANGELOG.md
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          $lines = Get-Content -LiteralPath CHANGELOG.md -Encoding UTF8
+          $notes = New-Object System.Collections.Generic.List[string]
+          $inside = $false
+          foreach ($line in $lines) {
+            if ($line -match '^## \[(.+?)\]') {
+              if ($inside) { break }
+              $inside = ($Matches[1] -eq $v)
+              continue
+            }
+            if ($inside) { $notes.Add($line) }
+          }
+          $body = ($notes -join "`n").Trim()
+          if (-not $body) { $body = "QTeX $v" }
+          $body += "`n`n---`n**Download:** ``QTeX-Setup-$v.exe`` installs QTeX. ``QTeX-$v-portable.zip`` runs without installing (unzip, then open ``QTeX.exe``). Requires MiKTeX or TeX Live."
+          [IO.File]::WriteAllText("release-notes.md", $body, (New-Object Text.UTF8Encoding $false))
+          Get-Content release-notes.md
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: QTeX ${{ steps.version.outputs.version }}
+          body_path: release-notes.md
+          files: |
+            installer/QTeX-Setup-*.exe
+            installer/QTeX-*-portable.zip
