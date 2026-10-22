@@ -1803,7 +1803,7 @@ class MainWindow(QMainWindow):
         e.accept()
 
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 
 
 def resource_path(*parts):

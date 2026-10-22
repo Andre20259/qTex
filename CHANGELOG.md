@@ -5,6 +5,8 @@ Write upcoming changes under **Unreleased**; `release.ps1` turns that section in
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-22
+
 ### Added
 - **Highlight source** button on the PDF toolbar: point at the PDF and the matching line is highlighted in the editor (switching tabs if it's in another file).
 - `Ctrl+click` on the PDF jumps to that line in the editor.
