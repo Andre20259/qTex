@@ -57,6 +57,7 @@ Tick **latexmk** in the toolbar to use latexmk instead. MiKTeX's latexmk needs P
 | Close tab / next / previous | `Ctrl+W` / `Ctrl+PgDown` / `Ctrl+PgUp` |
 | Toggle comment | `Ctrl+/` |
 | Show/hide project tree | `Ctrl+B` |
+| List all shortcuts | `F1` (Help → Keyboard Shortcuts) |
 
 ## Development
 

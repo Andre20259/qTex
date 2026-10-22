@@ -10,9 +10,12 @@ Write upcoming changes under **Unreleased**; `release.ps1` turns that section in
 - `Ctrl+click` on the PDF jumps to that line in the editor.
 - *Sync PDF to Cursor* (`Ctrl+J`) now outlines the matching text in the PDF for a moment.
 - `Shift` + mouse wheel scrolls the PDF sideways when zoomed in; `Ctrl` + mouse wheel zooms.
+- **Help → Keyboard Shortcuts** (`F1`): searchable list of every shortcut.
+- *Toggle Comment* now shows its `Ctrl+/` shortcut in the View menu.
 
 ### Fixed
 - Zooming in or out from *Fit width* / *Fit page* now continues from the current size instead of jumping to 100%.
+- `Shift+Enter` now starts a real new line (without indentation). Before, it inserted a special line break that made line numbers in the editor drift from the file, so error markers and PDF sync could land on the wrong line.
 
 ## [1.0.1] - 2026-10-22
 

@@ -34,7 +34,9 @@ from PySide6.QtGui import (QAction, QColor, QDesktopServices, QFont,
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
-                               QComboBox, QFileDialog, QFileSystemModel,
+                               QComboBox, QDialog, QDialogButtonBox,
+                               QFileDialog, QFileSystemModel, QHeaderView,
+                               QLineEdit, QTreeWidget, QTreeWidgetItem,
                                QInputDialog, QLabel, QListWidget,
                                QListWidgetItem, QMainWindow, QMenu,
                                QMessageBox, QPlainTextEdit, QPushButton,
@@ -299,7 +301,13 @@ class CodeEditor(QPlainTextEdit):
         self.setFocus()
 
     def keyPressEvent(self, e):
-        if e.key() in (Qt.Key_Return, Qt.Key_Enter) and not e.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier):
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter) and not e.modifiers() & Qt.ControlModifier:
+            if e.modifiers() & Qt.ShiftModifier:
+                # Qt's default Shift+Enter inserts a Unicode line separator (U+2028): the editor counts it
+                # as the same line while the saved file gets a real newline, so line numbers drift.
+                self.textCursor().insertBlock()
+                self.ensureCursorVisible()
+                return
             indent = re.match(r"\s*", self.textCursor().block().text()).group(0)
             super().keyPressEvent(e)
             self.insertPlainText(indent)
@@ -831,12 +839,14 @@ class MainWindow(QMainWindow):
             None, m_build)
         act("Clean Aux Files", self.clean, None, m_build)
         act("Sync PDF to Cursor", self.forward_search, "Ctrl+J", m_view, True)
-        act("Toggle Comment", lambda: self.current_editor() and self.current_editor().toggle_comment(), None, m_view)
+        act("Toggle Comment", lambda: self.current_editor() and self.current_editor().toggle_comment(), "Ctrl+/", m_view)
         act("Next Tab", lambda: self.tabs.setCurrentIndex((self.tabs.currentIndex() + 1) % max(1, self.tabs.count())),
             "Ctrl+PgDown", m_view)
         act("Previous Tab", lambda: self.tabs.setCurrentIndex((self.tabs.currentIndex() - 1) % max(1, self.tabs.count())),
             "Ctrl+PgUp", m_view)
         act("Show/Hide Project Tree", self.toggle_tree, "Ctrl+B", m_view)
+        act("Keyboard Shortcuts", self.show_shortcuts, "F1", m_help)
+        m_help.addSeparator()
         act(f"About {APP_NAME}", self.show_about, None, m_help)
 
         tb.addSeparator()
@@ -864,6 +874,97 @@ class MainWindow(QMainWindow):
         self.show_boxes.setChecked(self.settings.value("boxes", "false") == "true")
         self.show_boxes.toggled.connect(lambda: self.main and self._parse_log())
         tb.addWidget(self.show_boxes)
+
+    def _shortcut_sections(self):
+        """(section, [(action, keys)]) built from the menus, so the list never goes out of date."""
+        native = QKeySequence.NativeText
+        sections = []
+        for menu_action in self.menuBar().actions():
+            menu = menu_action.menu()
+            if not menu:
+                continue
+            rows = []
+            for a in menu.actions():
+                if a.isSeparator() or a.menu() or a.shortcut().isEmpty():
+                    continue
+                name = a.text().replace("&", "").replace("▶", "").replace("…", "").strip()
+                rows.append((name, a.shortcut().toString(native)))
+            if rows:
+                sections.append((menu_action.text().replace("&", ""), rows))
+
+        def std(key):
+            return QKeySequence(key).toString(native)
+        sections.append(("Editor", [
+            ("Undo / Redo", f"{std(QKeySequence.Undo)} / {std(QKeySequence.Redo)}"),
+            ("Cut / Copy / Paste", f"{std(QKeySequence.Cut)} / {std(QKeySequence.Copy)} / {std(QKeySequence.Paste)}"),
+            ("Select all", std(QKeySequence.SelectAll)),
+            ("New line keeping indentation", "Enter"),
+            ("New line without indentation", "Shift+Enter"),
+        ]))
+        sections.append(("PDF preview", [
+            ("Jump to the source line", "Ctrl+Click"),
+            ("Highlight the source line under the mouse", "“Highlight source” button"),
+            ("Scroll sideways (when zoomed in)", "Shift+Wheel"),
+            ("Zoom in / out", "Ctrl+Wheel"),
+        ]))
+        return sections
+
+    def show_shortcuts(self):
+        dlg = getattr(self, "_shortcuts_dlg", None)
+        if dlg is None:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Keyboard Shortcuts")
+            dlg.resize(520, 600)
+            lay = QVBoxLayout(dlg)
+            search = QLineEdit()
+            search.setPlaceholderText("Search shortcuts…")
+            search.setClearButtonEnabled(True)
+            tree = QTreeWidget()
+            tree.setColumnCount(2)
+            tree.setHeaderLabels(["Action", "Shortcut"])
+            tree.setRootIsDecorated(False)
+            tree.setAlternatingRowColors(True)
+            tree.setSelectionMode(QAbstractItemView.NoSelection)
+            tree.setFocusPolicy(Qt.NoFocus)
+            tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+            tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            tree.header().setStretchLastSection(False)
+            bold = QFont()
+            bold.setBold(True)
+            mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+            for title, rows in self._shortcut_sections():
+                sec = QTreeWidgetItem(tree, [title])
+                sec.setFont(0, bold)
+                sec.setFirstColumnSpanned(True)
+                for name, keys in rows:
+                    it = QTreeWidgetItem(sec, [name, keys])
+                    it.setFont(1, mono)
+            tree.expandAll()
+
+            def apply_filter(text):
+                t = text.strip().lower()
+                for i in range(tree.topLevelItemCount()):
+                    sec = tree.topLevelItem(i)
+                    any_shown = False
+                    for j in range(sec.childCount()):
+                        ch = sec.child(j)
+                        show = not t or t in ch.text(0).lower() or t in ch.text(1).lower() or t in sec.text(0).lower()
+                        ch.setHidden(not show)
+                        any_shown |= show
+                    sec.setHidden(not any_shown)
+            search.textChanged.connect(apply_filter)
+            buttons = QDialogButtonBox(QDialogButtonBox.Close)
+            buttons.rejected.connect(dlg.close)
+            lay.addWidget(search)
+            lay.addWidget(tree)
+            lay.addWidget(buttons)
+            self._shortcuts_dlg = dlg
+            dlg._search = search
+        dlg._search.clear()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        dlg._search.setFocus()
 
     def show_about(self):
         QMessageBox.about(
