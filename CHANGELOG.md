@@ -5,6 +5,8 @@ Write upcoming changes under **Unreleased**; `release.ps1` turns that section in
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-10-23
+
 ### Added
 - **Light and dark themes**: *View → Theme* offers Light, Dark, or System (follow Windows). It switches instantly and is remembered. Syntax colors are tuned for each, and the Windows title bar follows the theme.
 
