@@ -33,6 +33,8 @@ Windows may say *"Windows protected your PC"* the first time, because the app is
 - **Problems** lists errors and warnings with their file (`chapters/intro.tex:10`). Click one to open that file at that line. Error lines are also marked red in the gutter. Tick *Box warnings* to include over/underfull boxes.
 - **PDF ↔ source.** *Sync PDF to Cursor* (`Ctrl+J`) scrolls the PDF to the cursor's line and outlines it. The **Highlight source** button on the PDF toolbar highlights the source line under your mouse as you move over the PDF. `Ctrl+click` in the PDF jumps to that line. Both work across all files in the project.
 - **PDF navigation.** Mouse wheel scrolls, `Shift` + wheel scrolls sideways (when zoomed in), `Ctrl` + wheel zooms.
+- **Search** with `Ctrl+F`: all matches are highlighted; `Enter`/`Shift+Enter` (or `F3`/`Shift+F3`) step through them. Options for match case and whole words. `Esc` closes the bar.
+- **More room:** hide the project tree with `Ctrl+B` and the Problems/Log panel with `Ctrl+Shift+M` (or its ✕). Both stay hidden until you bring them back.
 - **Right-click in the tree** to create files and folders, rename, delete (to the recycle bin), copy a path relative to the main file (for `\input`/`\includegraphics`), or show it in Explorer. Images and other non-text files open in your default app.
 - Open tabs, engine and main file are restored when you reopen a project. *File → Recent Projects* lists the last ten.
 - Files changed by another program reload automatically if you have no unsaved edits in them.
@@ -56,7 +58,9 @@ Tick **latexmk** in the toolbar to use latexmk instead. MiKTeX's latexmk needs P
 | Save / Save all | `Ctrl+S` / `Ctrl+Alt+S` |
 | Close tab / next / previous | `Ctrl+W` / `Ctrl+PgDown` / `Ctrl+PgUp` |
 | Toggle comment | `Ctrl+/` |
+| Find / next / previous | `Ctrl+F` / `F3` (or `Enter`) / `Shift+F3` (or `Shift+Enter`) |
 | Show/hide project tree | `Ctrl+B` |
+| Show/hide Problems panel | `Ctrl+Shift+M` |
 | List all shortcuts | `F1` (Help → Keyboard Shortcuts) |
 
 ## Development

@@ -5,6 +5,11 @@ Write upcoming changes under **Unreleased**; `release.ps1` turns that section in
 
 ## [Unreleased]
 
+### Added
+- **Search** (`Ctrl+F`): a find bar under the editor highlights every match and shows "3 of 12". `Enter`/`Shift+Enter` or `F3`/`Shift+F3` move between matches, with *Match case* and *Whole words* options. `Esc` closes it.
+- **Hide the Problems/Log panel** with `Ctrl+Shift+M` (View menu) or the ✕ on the panel. It stays hidden, even after a failed compile, until you show it again; the status bar then reminds you of the shortcut.
+- New **Edit** menu with Find, Find Next/Previous and Toggle Comment.
+
 ## [1.0.2] - 2026-10-22
 
 ### Added

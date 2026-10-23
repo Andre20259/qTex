@@ -26,7 +26,7 @@ from PySide6.QtCore import (QBuffer, QByteArray, QDir, QEvent, QFile,
                             QProcessEnvironment, QRect, QRectF,
                             QRegularExpression, QSettings, QSize,
                             QSortFilterProxyModel, Qt, QTimer, QUrl, Signal)
-from PySide6.QtGui import (QAction, QColor, QDesktopServices, QFont,
+from PySide6.QtGui import (QAction, QColor, QDesktopServices, QFont, QShortcut, QTextDocument,
                            QFontDatabase, QGuiApplication, QKeySequence,
                            QPainter, QPen,
                            QSyntaxHighlighter, QTextCharFormat, QTextCursor,
@@ -35,8 +35,9 @@ from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QComboBox, QDialog, QDialogButtonBox,
-                               QFileDialog, QFileSystemModel, QHeaderView,
-                               QLineEdit, QTreeWidget, QTreeWidgetItem,
+                               QFileDialog, QFileSystemModel, QHBoxLayout,
+                               QHeaderView, QLineEdit, QToolButton,
+                               QTreeWidget, QTreeWidgetItem,
                                QInputDialog, QLabel, QListWidget,
                                QListWidgetItem, QMainWindow, QMenu,
                                QMessageBox, QPlainTextEdit, QPushButton,
@@ -186,6 +187,7 @@ class CodeEditor(QPlainTextEdit):
         self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * 2)
         self.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self.error_lines = set()
+        self.search_matches = []         # QTextCursors of find-bar matches (highlighted)
         self.sync_line = None            # line highlighted from the PDF (1-based)
         self._sync_timer = QTimer(self, singleShot=True)
         self._sync_timer.timeout.connect(self.clear_sync_line)
@@ -251,6 +253,12 @@ class CodeEditor(QPlainTextEdit):
         sel.cursor = self.textCursor()
         sel.cursor.clearSelection()
         sels.append(sel)
+        for m in self.search_matches:
+            if m.hasSelection():
+                hit = QTextEdit.ExtraSelection()
+                hit.format.setBackground(QColor(255, 150, 0, 85))
+                hit.cursor = m
+                sels.append(hit)
         if self.sync_line:
             block = self.document().findBlockByNumber(self.sync_line - 1)
             if block.isValid():
@@ -339,6 +347,217 @@ class CodeEditor(QPlainTextEdit):
             elif text.strip():
                 c.insertText("% ")
         cur.endEditBlock()
+
+
+# --------------------------------------------------------------------------- #
+#  Find bar (Ctrl+F)
+# --------------------------------------------------------------------------- #
+class FindBar(QWidget):
+    """Search in the current editor tab: highlights all matches, Enter/Shift+Enter to step through."""
+    MAX_HIGHLIGHTS = 5000
+
+    def __init__(self, window):
+        super().__init__()
+        self.main_window = window
+        self.setVisible(False)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6, 3, 6, 3)
+        lay.setSpacing(4)
+
+        self.field = QLineEdit()
+        self.field.setPlaceholderText("Find")
+        self.field.setClearButtonEnabled(True)
+        self.field.setMinimumWidth(220)
+        self.field.textChanged.connect(lambda _t: self.search(from_start_of_selection=True))
+        self.field.installEventFilter(self)
+
+        def tbtn(text, tip, slot, checkable=False):
+            b = QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setCheckable(checkable)
+            b.setAutoRaise(True)
+            (b.toggled if checkable else b.clicked).connect(slot)
+            return b
+
+        self.case_btn = tbtn("Aa", "Match case", lambda _c: self.search(from_start_of_selection=True), True)
+        self.word_btn = tbtn("W", "Whole words only", lambda _c: self.search(from_start_of_selection=True), True)
+        self.count = QLabel()
+        self.count.setMinimumWidth(90)
+        prev_btn = tbtn("▲", "Previous match (Shift+Enter, Shift+F3)", self.find_prev)
+        next_btn = tbtn("▼", "Next match (Enter, F3)", self.find_next)
+        close_btn = tbtn("✕", "Close (Esc)", self.close_bar)
+
+        lay.addWidget(QLabel("Find:"))
+        lay.addWidget(self.field, 1)
+        lay.addWidget(self.case_btn)
+        lay.addWidget(self.word_btn)
+        lay.addWidget(self.count)
+        lay.addWidget(prev_btn)
+        lay.addWidget(next_btn)
+        lay.addStretch(0)
+        lay.addWidget(close_btn)
+
+        # refresh highlights/count when the text changes (debounced)
+        self._refresh = QTimer(self, singleShot=True, interval=250)
+        self._refresh.timeout.connect(lambda: self.search(move=False))
+        self._watched = None
+
+    # ---- helpers
+    def editor(self):
+        return self.main_window.current_editor()
+
+    def _flags(self, backward=False):
+        f = QTextDocument.FindFlag(0)
+        if self.case_btn.isChecked():
+            f |= QTextDocument.FindCaseSensitively
+        if self.word_btn.isChecked():
+            f |= QTextDocument.FindWholeWords
+        if backward:
+            f |= QTextDocument.FindBackward
+        return f
+
+    def _watch(self, ed):
+        if self._watched is ed:
+            return
+        if self._watched is not None:
+            try:
+                self._watched.textChanged.disconnect(self._refresh.start)
+            except (RuntimeError, TypeError):
+                pass
+        self._watched = ed
+        if ed is not None:
+            ed.textChanged.connect(self._refresh.start)
+
+    def _all_matches(self, ed, text):
+        doc = ed.document()
+        out = []
+        c = QTextCursor(doc)
+        flags = self._flags()
+        while len(out) < self.MAX_HIGHLIGHTS:
+            c = doc.find(text, c, flags)
+            if c.isNull():
+                break
+            out.append(QTextCursor(c))
+        return out
+
+    def _update_count(self, ed):
+        n = len(ed.search_matches) if ed else 0
+        text = self.field.text()
+        if not text:
+            self.count.setText("")
+            self.field.setStyleSheet("")
+            return
+        if n == 0:
+            self.count.setText("No results")
+            self.field.setStyleSheet("QLineEdit { background: #f8d7d7; color: #222; }")
+            return
+        self.field.setStyleSheet("")
+        cur = ed.textCursor()
+        idx = next((i for i, m in enumerate(ed.search_matches)
+                    if m.selectionStart() == cur.selectionStart() and m.selectionEnd() == cur.selectionEnd()), None)
+        more = "+" if n >= self.MAX_HIGHLIGHTS else ""
+        self.count.setText(f"{idx + 1} of {n}{more}" if idx is not None else f"{n}{more} matches")
+
+    # ---- actions
+    def open_bar(self):
+        ed = self.editor()
+        if ed:
+            sel = ed.textCursor().selectedText()
+            if sel and "\u2029" not in sel and len(sel) < 200:  # use a single-line selection as the search text
+                self.field.blockSignals(True)
+                self.field.setText(sel)
+                self.field.blockSignals(False)
+        self.setVisible(True)
+        self.field.setFocus()
+        self.field.selectAll()
+        self.search(move=False)
+
+    def close_bar(self):
+        self.setVisible(False)
+        for i in range(self.main_window.tabs.count()):
+            ed = self.main_window.tabs.widget(i)
+            if ed.search_matches:
+                ed.search_matches = []
+                ed._highlight_current_line()
+        self._watch(None)
+        ed = self.editor()
+        if ed:
+            ed.setFocus()
+
+    def tab_changed(self):
+        if self.isVisible():
+            self.search(move=False)
+
+    def search(self, move=True, from_start_of_selection=False):
+        """Re-highlight all matches. With move, select the first match at/after the cursor."""
+        ed = self.editor()
+        self._watch(ed if self.isVisible() else None)
+        if ed is None:
+            self.count.setText("")
+            return
+        if not self.isVisible():  # never leave highlights behind while the bar is closed
+            if ed.search_matches:
+                ed.search_matches = []
+                ed._highlight_current_line()
+            return
+        text = self.field.text()
+        ed.search_matches = self._all_matches(ed, text) if text else []
+        if move and text and ed.search_matches:
+            cur = ed.textCursor()
+            start = cur.selectionStart() if from_start_of_selection else cur.position()
+            nxt = next((m for m in ed.search_matches if m.selectionStart() >= start), ed.search_matches[0])
+            ed.setTextCursor(QTextCursor(nxt))
+            ed.centerCursor() if not self._visible(ed) else None
+        ed._highlight_current_line()
+        self._update_count(ed)
+
+    def _visible(self, ed):
+        r = ed.cursorRect()
+        return ed.viewport().rect().contains(r)
+
+    def _step(self, backward):
+        ed = self.editor()
+        text = self.field.text()
+        if not ed or not text:
+            if not self.isVisible():
+                self.open_bar()
+            return
+        if not self.isVisible():
+            self.setVisible(True)
+        doc = ed.document()
+        cur = ed.textCursor()
+        found = doc.find(text, cur, self._flags(backward))
+        if found.isNull():  # wrap around
+            c = QTextCursor(doc)
+            if backward:
+                c.movePosition(QTextCursor.End)
+            found = doc.find(text, c, self._flags(backward))
+            if not found.isNull():
+                self.main_window.status.showMessage("Search wrapped around", 1500)
+        if found.isNull():
+            self.search(move=False)
+            return
+        ed.setTextCursor(found)
+        if not self._visible(ed):
+            ed.centerCursor()
+        self.search(move=False)
+
+    def find_next(self):
+        self._step(False)
+
+    def find_prev(self):
+        self._step(True)
+
+    def eventFilter(self, obj, e):
+        if obj is self.field and e.type() == QEvent.KeyPress:
+            if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self.find_prev() if e.modifiers() & Qt.ShiftModifier else self.find_next()
+                return True
+            if e.key() == Qt.Key_Escape:
+                self.close_bar()
+                return True
+        return super().eventFilter(obj, e)
 
 
 # --------------------------------------------------------------------------- #
@@ -743,11 +962,31 @@ class MainWindow(QMainWindow):
         self.bottom = QTabWidget()
         self.bottom.addTab(self.issues, "Problems")
         self.bottom.addTab(self.log, "Log")
+        hide_btn = QToolButton()
+        hide_btn.setText("✕")
+        hide_btn.setAutoRaise(True)
+        hide_btn.setToolTip("Hide the Problems/Log panel (Ctrl+Shift+M)")
+        hide_btn.clicked.connect(self.toggle_bottom)
+        self.bottom.setCornerWidget(hide_btn, Qt.TopRightCorner)
+        self.bottom_hidden = self.settings.value("bottomHidden", "false") == "true"
+        self.bottom.setVisible(not self.bottom_hidden)
+
+        self.find_bar = FindBar(self)
+        self.tabs.currentChanged.connect(lambda _i: self.find_bar.tab_changed())
+        editor_area = QWidget()
+        ea = QVBoxLayout(editor_area)
+        ea.setContentsMargins(0, 0, 0, 0)
+        ea.setSpacing(0)
+        ea.addWidget(self.center)
+        ea.addWidget(self.find_bar)
+        esc = QShortcut(QKeySequence(Qt.Key_Escape), editor_area, context=Qt.WidgetWithChildrenShortcut)
+        esc.activated.connect(lambda: self.find_bar.isVisible() and self.find_bar.close_bar())
 
         mid = QSplitter(Qt.Vertical)
-        mid.addWidget(self.center)
+        mid.addWidget(editor_area)
         mid.addWidget(self.bottom)
         mid.setSizes([700, 160])
+        mid.setCollapsible(0, False)
 
         self.split = QSplitter(Qt.Horizontal)
         self.split.addWidget(self.tree)
@@ -804,6 +1043,7 @@ class MainWindow(QMainWindow):
         tb.setMovable(False)
         self.addToolBar(tb)
         m_file = self.menuBar().addMenu("&File")
+        m_edit = self.menuBar().addMenu("&Edit")
         m_build = self.menuBar().addMenu("&Build")
         m_view = self.menuBar().addMenu("&View")
         m_help = self.menuBar().addMenu("&Help")
@@ -832,6 +1072,12 @@ class MainWindow(QMainWindow):
         m_file.addSeparator()
         act("Quit", self.close, QKeySequence.Quit, m_file)
 
+        act("Find…", lambda: self.find_bar.open_bar(), QKeySequence.Find, m_edit)
+        act("Find Next", lambda: self.find_bar.find_next(), QKeySequence.FindNext, m_edit)
+        act("Find Previous", lambda: self.find_bar.find_prev(), QKeySequence.FindPrevious, m_edit)
+        m_edit.addSeparator()
+        act("Toggle Comment", lambda: self.current_editor() and self.current_editor().toggle_comment(), "Ctrl+/", m_edit)
+
         tb.addSeparator()
         act("▶ Compile", self.compile, "Ctrl+Return", m_build, True)
         act("Stop", self.stop_compile, None, m_build)
@@ -839,12 +1085,12 @@ class MainWindow(QMainWindow):
             None, m_build)
         act("Clean Aux Files", self.clean, None, m_build)
         act("Sync PDF to Cursor", self.forward_search, "Ctrl+J", m_view, True)
-        act("Toggle Comment", lambda: self.current_editor() and self.current_editor().toggle_comment(), "Ctrl+/", m_view)
         act("Next Tab", lambda: self.tabs.setCurrentIndex((self.tabs.currentIndex() + 1) % max(1, self.tabs.count())),
             "Ctrl+PgDown", m_view)
         act("Previous Tab", lambda: self.tabs.setCurrentIndex((self.tabs.currentIndex() - 1) % max(1, self.tabs.count())),
             "Ctrl+PgUp", m_view)
         act("Show/Hide Project Tree", self.toggle_tree, "Ctrl+B", m_view)
+        act("Show/Hide Problems Panel", self.toggle_bottom, "Ctrl+Shift+M", m_view)
         act("Keyboard Shortcuts", self.show_shortcuts, "F1", m_help)
         m_help.addSeparator()
         act(f"About {APP_NAME}", self.show_about, None, m_help)
@@ -976,6 +1222,11 @@ class MainWindow(QMainWindow):
             "<a href='https://www.gnu.org/licenses/gpl-3.0.html'>GNU General Public License v3</a> "
             "or later. It comes with ABSOLUTELY NO WARRANTY.</p>"
             "<p>Built with Qt and PySide6 (LGPLv3).</p>")
+
+    def toggle_bottom(self):
+        self.bottom_hidden = not self.bottom_hidden
+        self.settings.setValue("bottomHidden", "true" if self.bottom_hidden else "false")
+        self.bottom.setVisible(not self.bottom_hidden)
 
     def toggle_tree(self):
         self.tree_hidden = not self.tree_hidden
@@ -1601,7 +1852,10 @@ class MainWindow(QMainWindow):
             runs = self._build.get("runs", 0)
             self.status.showMessage("Compiled successfully" + (f" ({runs} runs)" if runs > 1 else ""), 3000)
         else:
-            self.status.showMessage(f"Compilation failed — {n_err} error(s)" if n_err else f"Compilation failed (exit {code})")
+            msg = f"Compilation failed — {n_err} error(s)" if n_err else f"Compilation failed (exit {code})"
+            if self.bottom_hidden:
+                msg += "  ·  Ctrl+Shift+M shows the Problems panel"
+            self.status.showMessage(msg)
             self.bottom.setCurrentWidget(self.issues if self.issues.count() else self.log)
         pdf = self._pdf_path()
         if pdf and os.path.exists(pdf):
