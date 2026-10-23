@@ -5,6 +5,8 @@ Write upcoming changes under **Unreleased**; `release.ps1` turns that section in
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-10-23
+
 ### Added
 - **Automatic updates.** When QTeX opens, it checks GitHub for a newer release. If there is one, it shows what's new and offers *Update now*, *Later* or *Skip this version*. *Update now* downloads the installer, verifies its SHA-256 checksum, closes QTeX (asking to save unsaved work first), installs the update and reopens QTeX. Portable copies offer to open the download page instead.
 - *Help → Check for Updates…*, and *Help → Check for Updates at Startup* to turn the automatic check off.
