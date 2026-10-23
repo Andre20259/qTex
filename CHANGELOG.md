@@ -5,6 +5,12 @@ Write upcoming changes under **Unreleased**; `release.ps1` turns that section in
 
 ## [Unreleased]
 
+### Changed
+- **Export PDF** now just asks for a folder. The file is named after the document's title, and the title and authors are set automatically. The last folder is remembered per project. If the document sets `\hypersetup{pdftitle=..., pdfauthor=...}`, those values are used instead.
+
+### Fixed
+- The exported title no longer includes things like a logo's file name or spacing from `\includegraphics{...}\\[6pt]` in `\title{}`. Images, spacing, colors, notes and links' URLs are now left out.
+
 ## [1.0.6] - 2026-10-23
 
 ### Added

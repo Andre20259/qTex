@@ -1022,17 +1022,43 @@ def _braced(text, i):
     return text[i + 1:], len(text)
 
 
+# command -> how many leading {arguments} to drop (the rest, if any, is kept as text)
+_DROP_ARGS = {
+    "includegraphics": 1, "vspace": 1, "hspace": 1, "rule": 2, "phantom": 1, "hphantom": 1, "vphantom": 1,
+    "color": 1, "pagecolor": 1, "textcolor": 1, "colorbox": 1, "fcolorbox": 2, "raisebox": 1,
+    "scalebox": 1, "resizebox": 2, "setlength": 2, "addtolength": 2, "fontsize": 2, "href": 1,
+    "thanks": 1, "footnote": 1, "inst": 1, "orcidlink": 1, "orcid": 1, "email": 1, "affil": 1,
+    "label": 1, "ref": 1, "cite": 1, "logo": 1, "input": 1, "includesvg": 1, "tikz": 1,
+}
+
+
 def latex_to_text(s):
     """Rough plain-text version of a LaTeX snippet (for PDF title/author fields)."""
     s = re.sub(r"(?<!\\)%[^\n]*", "", s)
-    # drop commands whose argument isn't part of the name/title
-    for cmd in ("thanks", "footnote", "footnotemark", "inst", "orcidlink", "orcid", "email", "affil", "label"):
+    s = re.sub(r"\\\\\*?\s*(\[[^\]]*\])?", " ", s)        # line breaks: \\  \\*  \\[6pt]
+    s = re.sub(r"\\[vh]skip\s*-?[\d.]+\s*[a-z]{2}(\s*plus\s*-?[\d.]+\s*[a-z]+)?", " ", s)
+    s = re.sub(r"\\kern\s*-?[\d.]+\s*[a-z]{2}", "", s)
+    # commands whose first N arguments aren't text (logos, spacing, colors, notes, links' URLs...)
+    for cmd, n in _DROP_ARGS.items():
+        pat = re.compile(r"\\" + cmd + r"(?![A-Za-z])\*?")
         while True:
-            m = re.search(r"\\" + cmd + r"\*?\s*(\[[^\]]*\])?\s*(?=\{)", s)
+            m = pat.search(s)
             if not m:
                 break
-            _c, end = _braced(s, m.end())
-            s = s[:m.start()] + s[end:]
+            j = m.end()
+            for _ in range(n):
+                k = j
+                while k < len(s) and (s[k].isspace() or s[k] == "["):   # skip optional [..] arguments
+                    if s[k] == "[":
+                        close = s.find("]", k)
+                        k = close + 1 if close >= 0 else len(s)
+                    else:
+                        k += 1
+                if k < len(s) and s[k] == "{":
+                    j = _braced(s, k)[1]
+                else:
+                    break
+            s = s[:m.start()] + " " + s[j:]
     s = re.sub(r"\\footnotemark(\[[^\]]*\])?", "", s)
     # accents: \'e  \'{e}  \"{o}  \c{c}
     def accent(m):
@@ -1061,13 +1087,28 @@ def doc_title_authors(main_path):
     def arg(cmd):
         m = re.search(r"\\" + cmd + r"\s*(\[[^\]]*\])?\s*(?=\{)", text)
         return _braced(text, m.end())[0] if m else ""
-    title = latex_to_text(arg("title"))
+    def hyperref(key):
+        """Value of pdftitle=... / pdfauthor=... in \\hypersetup{...} or hyperref's package options."""
+        m = re.search(r"\b" + key + r"\s*=\s*", text)
+        if not m:
+            return None
+        j = m.end()
+        if j < len(text) and text[j] == "{":
+            return _braced(text, j)[0]
+        end = re.search(r"[,}\]\n]", text[j:])
+        return text[j:j + end.start()] if end else text[j:]
+
+    pdftitle, pdfauthor = hyperref("pdftitle"), hyperref("pdfauthor")
+    title = latex_to_text(pdftitle) if pdftitle and latex_to_text(pdftitle) else latex_to_text(arg("title"))
     authors = []
-    for part in re.split(r"\\and\b|\\AND\b", arg("author")):
-        first_line = re.split(r"\\\\", part)[0]   # the name; later lines are usually affiliations
-        name = latex_to_text(first_line)
-        if name:
-            authors.append(name)
+    if pdfauthor and latex_to_text(pdfauthor):
+        authors = [a for a in (latex_to_text(x) for x in re.split(r";|,|\\and\b|\s+and\s+", pdfauthor)) if a]
+    else:
+        for part in re.split(r"\\and\b|\\AND\b", arg("author")):
+            first_line = re.split(r"\\\\", part)[0]   # the name; later lines are usually affiliations
+            name = latex_to_text(first_line)
+            if name:
+                authors.append(name)
     return title, authors
 
 
@@ -1085,8 +1126,9 @@ def write_pdf_with_properties(src, dst, title, authors, subject, keywords):
         reader = PdfReader(io.BytesIO(f.read()))
     writer = PdfWriter(clone_from=reader)
     tz = time.strftime("%z") or "+0000"
-    meta = {"/Title": title, "/Author": "; ".join(authors), "/Subject": subject, "/Keywords": keywords,
-            "/ModDate": time.strftime("D:%Y%m%d%H%M%S") + f"{tz[:3]}'{tz[3:]}'"}
+    meta = {k: v for k, v in (("/Title", title), ("/Author", "; ".join(authors)),
+                              ("/Subject", subject), ("/Keywords", keywords)) if v}
+    meta["/ModDate"] = time.strftime("D:%Y%m%d%H%M%S") + f"{tz[:3]}'{tz[3:]}'"
     writer.add_metadata(meta)
     # An XMP metadata stream (e.g. from hyperxmp) can override the fields above in some viewers; drop it
     # unless the PDF claims PDF/A conformance, which needs it.
@@ -1109,88 +1151,6 @@ def write_pdf_with_properties(src, dst, title, authors, subject, keywords):
         except OSError:
             pass
         raise
-
-
-class ExportDialog(QDialog):
-    def __init__(self, parent, values, doc_title, doc_authors):
-        super().__init__(parent)
-        self.setWindowTitle("Export PDF")
-        self.resize(560, 0)
-        self.doc_title, self.doc_authors = doc_title, doc_authors
-        lay = QVBoxLayout(self)
-        form = QFormLayout()
-
-        self.path = QLineEdit(values.get("path", ""))
-        browse = QPushButton("Browse…")
-        browse.clicked.connect(self._browse)
-        row = QWidget()
-        rl = QHBoxLayout(row)
-        rl.setContentsMargins(0, 0, 0, 0)
-        rl.addWidget(self.path, 1)
-        rl.addWidget(browse)
-        form.addRow("Save as:", row)
-
-        self.title = QLineEdit(values.get("title", ""))
-        form.addRow("Title:", self.title)
-        self.authors = QPlainTextEdit("\n".join(values.get("authors", [])))
-        self.authors.setPlaceholderText("One author per line")
-        self.authors.setFixedHeight(self.authors.fontMetrics().lineSpacing() * 4 + 12)
-        self.authors.setTabChangesFocus(True)
-        form.addRow("Authors:", self.authors)
-        self.subject = QLineEdit(values.get("subject", ""))
-        form.addRow("Subject:", self.subject)
-        self.keywords = QLineEdit(values.get("keywords", ""))
-        self.keywords.setPlaceholderText("e.g. Fourier analysis, Parseval, Gibbs phenomenon")
-        form.addRow("Keywords:", self.keywords)
-        lay.addLayout(form)
-
-        from_doc = QPushButton("Use \\title and \\author from the document")
-        from_doc.setEnabled(bool(doc_title or doc_authors))
-        from_doc.clicked.connect(self._from_document)
-        lay.addWidget(from_doc, alignment=Qt.AlignLeft)
-        self.open_after = QCheckBox("Open the PDF after exporting")
-        self.open_after.setChecked(values.get("open_after", True))
-        lay.addWidget(self.open_after)
-        note = QLabel("<small>These are the PDF's document properties: what Windows Explorer, Acrobat and "
-                      "browsers show as its title and authors. The compiled PDF in your project is not changed.</small>")
-        note.setWordWrap(True)
-        lay.addWidget(note)
-
-        box = QDialogButtonBox(QDialogButtonBox.Cancel)
-        self.export_btn = box.addButton("Export", QDialogButtonBox.AcceptRole)
-        self.export_btn.setDefault(True)
-        box.accepted.connect(self._accept)
-        box.rejected.connect(self.reject)
-        lay.addWidget(box)
-
-    def _from_document(self):
-        self.title.setText(self.doc_title)
-        self.authors.setPlainText("\n".join(self.doc_authors))
-
-    def _browse(self):
-        p, _ = QFileDialog.getSaveFileName(self, "Export PDF as", self.path.text(), "PDF files (*.pdf)")
-        if p:
-            self.path.setText(p if p.lower().endswith(".pdf") else p + ".pdf")
-
-    def _accept(self):
-        p = self.path.text().strip()
-        if not p:
-            QMessageBox.warning(self, "Export PDF", "Choose a file name for the PDF.")
-            return
-        if not p.lower().endswith(".pdf"):
-            p += ".pdf"
-            self.path.setText(p)
-        folder = os.path.dirname(p)
-        if not folder or not os.path.isdir(folder):
-            QMessageBox.warning(self, "Export PDF", f"The folder doesn't exist:\n{folder or '(none)'}")
-            return
-        self.accept()
-
-    def values(self):
-        authors = [a.strip() for a in self.authors.toPlainText().splitlines() if a.strip()]
-        return {"path": os.path.abspath(self.path.text().strip()), "title": self.title.text().strip(),
-                "authors": authors, "subject": self.subject.text().strip(),
-                "keywords": self.keywords.text().strip(), "open_after": self.open_after.isChecked()}
 
 
 # --------------------------------------------------------------------------- #
@@ -2428,29 +2388,28 @@ class MainWindow(QMainWindow):
         return False
 
     def export_pdf(self):
+        """Ask for a folder; save '<document title>.pdf' there with the title and authors set."""
         if not self.main:
             QMessageBox.information(self, "Export PDF", "Open a project with a main file first.")
             return
-        doc_title, doc_authors = doc_title_authors(self.main)
-        key = settings_key("export", self.root or os.path.dirname(self.main))
-        try:
-            values = json.loads(self.settings.value(key, "") or "{}")
-        except ValueError:
-            values = {}
-        if not values:
-            base = safe_filename(doc_title) if doc_title else os.path.splitext(os.path.basename(self.main))[0]
-            values = {"path": os.path.join(os.path.dirname(self.main), base + ".pdf"),
-                      "title": doc_title, "authors": doc_authors}
-        dlg = ExportDialog(self, values, doc_title, doc_authors)
-        if dlg.exec() != QDialog.Accepted:
+        title, authors = doc_title_authors(self.main)
+        name = (safe_filename(title) if title else os.path.splitext(os.path.basename(self.main))[0]) + ".pdf"
+        key = settings_key("exportDir", self.root or os.path.dirname(self.main))
+        last_folder = self.settings.value(key, "")
+        if not last_folder or not os.path.isdir(last_folder):
+            last_folder = os.path.dirname(self.main)
+        folder = QFileDialog.getExistingDirectory(self, f"Export “{name}” to folder", last_folder)
+        if not folder:
             return
-        params = dlg.values()
-        if os.path.exists(params["path"]) and norm(params["path"]) != norm(values.get("path", "")) \
-                and norm(params["path"]) != norm(self._pdf_path()):
-            r = QMessageBox.question(self, "Export PDF", f"{os.path.basename(params['path'])} already exists. Replace it?")
+        path = os.path.join(folder, name)
+        last_path = self.settings.value(key + "/lastFile", "")
+        if os.path.exists(path) and norm(path) != norm(last_path or "") and norm(path) != norm(self._pdf_path()):
+            r = QMessageBox.question(self, "Export PDF", f"{name} already exists in that folder. Replace it?")
             if r != QMessageBox.Yes:
                 return
-        self.settings.setValue(key, json.dumps(params))
+        self.settings.setValue(key, folder)
+        self.settings.setValue(key + "/lastFile", path)
+        params = {"path": path, "title": title, "authors": authors, "subject": "", "keywords": ""}
         if self._pdf_is_stale():
             self._pending_export = params
             self.status.showMessage("Compiling before export…")
@@ -2475,9 +2434,8 @@ class MainWindow(QMainWindow):
         except Exception as ex:
             QMessageBox.warning(self, "Export PDF", f"Export failed:\n{ex}")
             return
-        self.status.showMessage(f"Exported {p['path']}", 6000)
-        if p.get("open_after"):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(p["path"]))
+        who = f" by {', '.join(p['authors'])}" if p["authors"] else ""
+        self.status.showMessage(f"Exported “{os.path.basename(p['path'])}”{who} to {os.path.dirname(p['path'])}", 10000)
 
     def stop_compile(self):
         if self.proc and self.proc.state() != QProcess.NotRunning:

@@ -38,7 +38,7 @@ Windows may say *"Windows protected your PC"* the first time, because the app is
 - **Search** with `Ctrl+F`: all matches are highlighted; `Enter`/`Shift+Enter` (or `F3`/`Shift+F3`) step through them. Options for match case and whole words. `Esc` closes the bar.
 - **More room:** hide the project tree with `Ctrl+B` and the Problems/Log panel with `Ctrl+Shift+M` (or its ✕). Both stay hidden until you bring them back.
 - **Light or dark.** *View → Theme* switches between Light, Dark and System (follows Windows). The choice is remembered.
-- **Export PDF** (`Ctrl+E`): save the PDF under the name and folder you choose, with its title, authors, subject and keywords set (the properties Windows Explorer and PDF readers show). Title and authors are suggested from `\title{}` and `\author{}`, and your choices are remembered per project.
+- **Export PDF** (`Ctrl+E`): pick a folder and QTeX saves the PDF there, named after the document's title, with the title and authors from `\title{}` and `\author{}` set as its properties (what Windows Explorer and PDF readers show). To use a different title or author list, set `\hypersetup{pdftitle={...}, pdfauthor={...}}` in your document.
 - **Right-click in the tree** to create files and folders, rename, delete (to the recycle bin), copy a path relative to the main file (for `\input`/`\includegraphics`), or show it in Explorer. Images and other non-text files open in your default app.
 - Open tabs, engine and main file are restored when you reopen a project. *File → Recent Projects* lists the last ten.
 - Files changed by another program reload automatically if you have no unsaved edits in them.
