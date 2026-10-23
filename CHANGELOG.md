@@ -5,6 +5,8 @@ Write upcoming changes under **Unreleased**; `release.ps1` turns that section in
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-10-23
+
 ### Changed
 - **Export PDF** now just asks for a folder. The file is named after the document's title, and the title and authors are set automatically. The last folder is remembered per project. If the document sets `\hypersetup{pdftitle=..., pdfauthor=...}`, those values are used instead.
 
