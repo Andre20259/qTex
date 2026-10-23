@@ -13,6 +13,8 @@ Get the latest Windows version from the **[Releases page](../../releases/latest)
 
 You also need a TeX distribution: [MiKTeX](https://miktex.org/download) or [TeX Live](https://tug.org/texlive/).
 
+**Updates:** installed copies check for a new release each time they open and can update themselves in a few clicks: QTeX downloads the new installer, verifies it, installs it and reopens. Portable copies tell you about new versions and open the download page. You can check by hand with *Help → Check for Updates…* or turn the startup check off in the same menu.
+
 Windows may say *"Windows protected your PC"* the first time, because the app isn't code-signed. Click **More info → Run anyway**.
 
 ## Features

@@ -16,12 +16,14 @@ Run:      python texeditor.py                 (reopens the last project)
           python texeditor.py path/to/file.tex
 """
 import hashlib
+import json
 import os
 import re
 import shutil
 import sys
+import tempfile
 
-from PySide6.QtCore import (QBuffer, QByteArray, QDir, QEvent, QFile,
+from PySide6.QtCore import (QBuffer, QByteArray, QDir, QEvent, QFile, QObject,
                             QFileSystemWatcher, QIODevice, QPointF, QProcess,
                             QProcessEnvironment, QRect, QRectF,
                             QRegularExpression, QSettings, QSize,
@@ -32,12 +34,14 @@ from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices, QFon
                            QPainter, QPen,
                            QSyntaxHighlighter, QTextCharFormat, QTextCursor,
                            QTextFormat)
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QComboBox, QDialog, QDialogButtonBox,
                                QFileDialog, QFileSystemModel, QHBoxLayout,
-                               QHeaderView, QLineEdit, QStyleFactory, QToolButton,
+                               QHeaderView, QLineEdit, QProgressDialog,
+                               QStyleFactory, QTextBrowser, QToolButton,
                                QTreeWidget, QTreeWidgetItem,
                                QInputDialog, QLabel, QListWidget,
                                QListWidgetItem, QMainWindow, QMenu,
@@ -991,6 +995,200 @@ def parse_log(text, base_dir):
 
 
 # --------------------------------------------------------------------------- #
+#  Updates from GitHub Releases
+# --------------------------------------------------------------------------- #
+GITHUB_REPO = "Andre20259/qTex"
+RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases/latest"
+# QTEX_UPDATE_URL lets tests point the updater at a local server.
+UPDATE_API = os.environ.get("QTEX_UPDATE_URL") or f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+
+def parse_version(v):
+    m = re.match(r"\s*v?(\d+)\.(\d+)\.(\d+)", v or "")
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def install_kind():
+    """'installer' (installed with QTeX-Setup, can self-update), 'portable' (unzipped .exe) or 'source'."""
+    if not getattr(sys, "frozen", False):
+        return "source"
+    folder = os.path.dirname(sys.executable)
+    try:
+        has_uninstaller = any(f.lower().startswith("unins") and f.lower().endswith(".exe") for f in os.listdir(folder))
+    except OSError:
+        has_uninstaller = False
+    return "installer" if sys.platform == "win32" and has_uninstaller else "portable"
+
+
+class Updater(QObject):
+    """Checks GitHub for a newer release; for installed copies, downloads, verifies and runs the installer."""
+    INSTALLER_RE = re.compile(r"^QTeX-Setup-.*\.exe$", re.I)
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.win = window
+        self.nam = QNetworkAccessManager(self)
+        self._busy = False
+
+    def _request(self, url):
+        req = QNetworkRequest(QUrl(url))
+        req.setRawHeader(b"User-Agent", f"QTeX/{APP_VERSION}".encode())
+        req.setAttribute(QNetworkRequest.RedirectPolicyAttribute, QNetworkRequest.NoLessSafeRedirectPolicy)
+        return req
+
+    # ---- 1. check
+    def check(self, manual=False):
+        if self._busy:
+            return
+        self._busy = True
+        req = self._request(UPDATE_API)
+        req.setRawHeader(b"Accept", b"application/vnd.github+json")
+        req.setTransferTimeout(15000)
+        reply = self.nam.get(req)
+        reply.finished.connect(lambda: self._checked(reply, manual))
+        if manual:
+            self.win.status.showMessage("Checking for updates…")
+
+    def _checked(self, reply, manual):
+        self._busy = False
+        err, data = reply.error(), bytes(reply.readAll())
+        reply.deleteLater()
+        if err != QNetworkReply.NoError:
+            if manual:
+                QMessageBox.warning(self.win, "Check for Updates",
+                                    f"Couldn't reach GitHub to check for updates.\n\n{reply.errorString()}")
+            return
+        try:
+            info = json.loads(data.decode("utf-8"))
+            tag = info["tag_name"]
+        except (ValueError, KeyError, UnicodeDecodeError):
+            if manual:
+                QMessageBox.warning(self.win, "Check for Updates", "GitHub sent an unexpected answer.")
+            return
+        latest, current = parse_version(tag), parse_version(APP_VERSION)
+        if not latest or not current or latest <= current:
+            if manual:
+                self.win.status.showMessage("", 1)
+                QMessageBox.information(self.win, "Check for Updates",
+                                        f"You're running the latest version ({APP_NAME} {APP_VERSION}).")
+            return
+        if not manual and self.win.settings.value("skipVersion", "") == tag:
+            return
+        self._offer(info)
+
+    # ---- 2. offer
+    def _offer(self, info):
+        tag = info["tag_name"]
+        new = tag.lstrip("vV")
+        kind = install_kind()
+        asset = next((a for a in info.get("assets", []) if self.INSTALLER_RE.match(a.get("name", ""))), None)
+        can_install = kind == "installer" and asset is not None
+
+        dlg = QDialog(self.win)
+        dlg.setWindowTitle("Update available")
+        dlg.resize(560, 440)
+        lay = QVBoxLayout(dlg)
+        head = QLabel(f"<h3>{APP_NAME} {new} is available</h3>"
+                      f"<p>You have version {APP_VERSION}.</p>")
+        lay.addWidget(head)
+        notes = QTextBrowser()
+        notes.setOpenExternalLinks(True)
+        body = (info.get("body") or "").split("\n---\n")[0].strip()   # drop the download footer
+        notes.setMarkdown(body or "No release notes.")
+        lay.addWidget(notes, 1)
+        if not can_install:
+            why = ("You're running QTeX from source." if kind == "source" else
+                   "This copy wasn't installed with the QTeX installer (portable version), so it can't update itself.")
+            tip = QLabel(f"<small>{why} Download the new version from the release page.</small>")
+            tip.setWordWrap(True)
+            lay.addWidget(tip)
+
+        box = QDialogButtonBox()
+        go = box.addButton("Update now" if can_install else "Open download page", QDialogButtonBox.AcceptRole)
+        box.addButton("Later", QDialogButtonBox.RejectRole)
+        skip = box.addButton("Skip this version", QDialogButtonBox.DestructiveRole)
+        go.setDefault(True)
+        choice = {}
+        go.clicked.connect(lambda: (choice.setdefault("v", "go"), dlg.accept()))
+        skip.clicked.connect(lambda: (choice.setdefault("v", "skip"), dlg.accept()))
+        box.rejected.connect(dlg.reject)
+        lay.addWidget(box)
+        dlg.exec()
+
+        if choice.get("v") == "skip":
+            self.win.settings.setValue("skipVersion", tag)
+        elif choice.get("v") == "go":
+            if can_install:
+                self._download(asset, new)
+            else:
+                QDesktopServices.openUrl(QUrl(info.get("html_url") or RELEASES_PAGE))
+
+    # ---- 3. download + verify
+    def _download(self, asset, new):
+        folder = os.path.join(tempfile.gettempdir(), "QTeX-update")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, os.path.basename(asset["name"]))
+        try:
+            out = open(path + ".part", "wb")
+        except OSError as ex:
+            QMessageBox.warning(self.win, "Update", f"Couldn't save the download:\n{ex}")
+            return
+        size = int(asset.get("size") or 0)
+        progress = QProgressDialog(f"Downloading {APP_NAME} {new}…", "Cancel", 0, max(1, size), self.win)
+        progress.setWindowTitle("Update")
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setValue(0)
+
+        reply = self.nam.get(self._request(asset["browser_download_url"]))
+        sha = hashlib.sha256()
+
+        def on_ready():
+            chunk = bytes(reply.readAll())
+            sha.update(chunk)
+            out.write(chunk)
+
+        def on_progress(done, total):
+            if total > 0 and progress.maximum() != total:
+                progress.setMaximum(total)
+            progress.setValue(done)
+
+        def on_done():
+            on_ready()
+            out.close()
+            progress.close()
+            err = reply.error()
+            reply.deleteLater()
+            if err == QNetworkReply.OperationCanceledError:
+                os.remove(path + ".part")
+                return
+            if err != QNetworkReply.NoError:
+                os.remove(path + ".part")
+                QMessageBox.warning(self.win, "Update", f"The download failed:\n{reply.errorString()}")
+                return
+            got = os.path.getsize(path + ".part")
+            digest = (asset.get("digest") or "").lower()
+            problem = None
+            if size and got != size:
+                problem = f"size {got} bytes, expected {size}"
+            elif digest.startswith("sha256:") and sha.hexdigest() != digest[7:]:
+                problem = "its SHA-256 checksum doesn't match the one GitHub published"
+            if problem:
+                os.remove(path + ".part")
+                QMessageBox.warning(self.win, "Update", f"The downloaded installer looks damaged ({problem}), "
+                                    "so it wasn't run. Please try again later.")
+                return
+            os.replace(path + ".part", path)
+            self.win.install_update(path)
+
+        reply.readyRead.connect(on_ready)
+        reply.downloadProgress.connect(on_progress)
+        reply.finished.connect(on_done)
+        progress.canceled.connect(reply.abort)
+
+
+# --------------------------------------------------------------------------- #
 #  Main window
 # --------------------------------------------------------------------------- #
 class MainWindow(QMainWindow):
@@ -1116,6 +1314,12 @@ class MainWindow(QMainWindow):
                 self.open_project(last)
         self._refresh_ui()
 
+        self._pending_installer = None
+        self.updater = Updater(self)
+        # Check GitHub for a newer release shortly after startup (built app only, not when run from source)
+        if getattr(sys, "frozen", False) and self.check_updates_action.isChecked():
+            QTimer.singleShot(2500, lambda: self.updater.check(manual=False))
+
     # ------------------------------------------------------------------ UI
     def _build_welcome(self):
         w = QWidget()
@@ -1199,6 +1403,13 @@ class MainWindow(QMainWindow):
             group.addAction(a)
             m_theme.addAction(a)
         act("Keyboard Shortcuts", self.show_shortcuts, "F1", m_help)
+        m_help.addSeparator()
+        act("Check for Updates…", lambda: self.updater.check(manual=True), None, m_help)
+        self.check_updates_action = QAction("Check for Updates at Startup", self, checkable=True)
+        self.check_updates_action.setChecked(self.settings.value("checkUpdates", "true") == "true")
+        self.check_updates_action.toggled.connect(
+            lambda on: self.settings.setValue("checkUpdates", "true" if on else "false"))
+        m_help.addAction(self.check_updates_action)
         m_help.addSeparator()
         act(f"About {APP_NAME}", self.show_about, None, m_help)
 
@@ -2163,6 +2374,20 @@ class MainWindow(QMainWindow):
             self.status.showMessage(f"PDF ↔ {rel}:{ln}", 2000)
 
     # ------------------------------------------------------------------ close
+    def install_update(self, installer):
+        """Close QTeX (asking to save unsaved work), then run the installer, which reopens QTeX when done."""
+        self._pending_installer = installer
+        if not self.close():  # the user cancelled at the "save changes?" prompt
+            self._pending_installer = None
+            self.status.showMessage("Update postponed. Use Help → Check for Updates… when you're ready.", 6000)
+
+    def _run_installer(self, installer):
+        args = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS", "/RELAUNCH=1"]
+        ok = QProcess.startDetached(installer, args)
+        ok = ok[0] if isinstance(ok, tuple) else ok
+        if not ok:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(installer)))
+
     def closeEvent(self, e):
         if not self._maybe_save_all():
             e.ignore()
@@ -2174,6 +2399,9 @@ class MainWindow(QMainWindow):
         self.settings.setValue("boxes", "true" if self.show_boxes.isChecked() else "false")
         self.stop_compile()
         e.accept()
+        if self._pending_installer:
+            self._run_installer(self._pending_installer)
+            QApplication.instance().quit()
 
 
 APP_VERSION = "1.0.4"

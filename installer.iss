@@ -71,3 +71,11 @@ Root: HKA; Subkey: "Software\Classes\Directory\Background\shell\QTeX\command";  
 
 [Run]
 Filename: "{app}\{#MyAppExe}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+; In-app updates run this installer with /SILENT /RELAUNCH=1: reopen QTeX afterwards, as the user (not elevated)
+Filename: "{app}\{#MyAppExe}"; Flags: nowait runasoriginaluser; Check: ShouldRelaunch
+
+[Code]
+function ShouldRelaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:relaunch|0}') = '1';
+end;
