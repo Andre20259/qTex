@@ -22,7 +22,7 @@ Windows may say *"Windows protected your PC"* the first time, because the app is
 - **No Perl or latexmk needed.** The built-in build runs LaTeX, BibTeX or Biber, makeindex, and reruns LaTeX until references settle. latexmk is optional.
 - **Problems panel.** Errors and warnings with the file and line they came from. Click one to jump there.
 - **SyncTeX, both ways.** `Ctrl+J` shows where the cursor's line is in the PDF. Turn on *Highlight source* and point at the PDF to see the matching source line highlighted, or `Ctrl+click` to jump there.
-- pdflatex, xelatex or lualatex; syntax highlighting; line numbers; comment toggling; file management in the tree; open tabs restored per project.
+- Light and dark themes; pdflatex, xelatex or lualatex; syntax highlighting; line numbers; comment toggling; file management in the tree; open tabs restored per project.
 
 ## Using QTeX
 
@@ -35,6 +35,7 @@ Windows may say *"Windows protected your PC"* the first time, because the app is
 - **PDF navigation.** Mouse wheel scrolls, `Shift` + wheel scrolls sideways (when zoomed in), `Ctrl` + wheel zooms.
 - **Search** with `Ctrl+F`: all matches are highlighted; `Enter`/`Shift+Enter` (or `F3`/`Shift+F3`) step through them. Options for match case and whole words. `Esc` closes the bar.
 - **More room:** hide the project tree with `Ctrl+B` and the Problems/Log panel with `Ctrl+Shift+M` (or its ✕). Both stay hidden until you bring them back.
+- **Light or dark.** *View → Theme* switches between Light, Dark and System (follows Windows). The choice is remembered.
 - **Right-click in the tree** to create files and folders, rename, delete (to the recycle bin), copy a path relative to the main file (for `\input`/`\includegraphics`), or show it in Explorer. Images and other non-text files open in your default app.
 - Open tabs, engine and main file are restored when you reopen a project. *File → Recent Projects* lists the last ten.
 - Files changed by another program reload automatically if you have no unsaved edits in them.

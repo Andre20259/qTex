@@ -26,7 +26,8 @@ from PySide6.QtCore import (QBuffer, QByteArray, QDir, QEvent, QFile,
                             QProcessEnvironment, QRect, QRectF,
                             QRegularExpression, QSettings, QSize,
                             QSortFilterProxyModel, Qt, QTimer, QUrl, Signal)
-from PySide6.QtGui import (QAction, QColor, QDesktopServices, QFont, QShortcut, QTextDocument,
+from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices, QFont, QPalette, QShortcut,
+                           QTextDocument,
                            QFontDatabase, QGuiApplication, QKeySequence,
                            QPainter, QPen,
                            QSyntaxHighlighter, QTextCharFormat, QTextCursor,
@@ -36,7 +37,7 @@ from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QComboBox, QDialog, QDialogButtonBox,
                                QFileDialog, QFileSystemModel, QHBoxLayout,
-                               QHeaderView, QLineEdit, QToolButton,
+                               QHeaderView, QLineEdit, QStyleFactory, QToolButton,
                                QTreeWidget, QTreeWidgetItem,
                                QInputDialog, QLabel, QListWidget,
                                QListWidgetItem, QMainWindow, QMenu,
@@ -123,11 +124,104 @@ def settings_key(prefix, root):
 
 
 # --------------------------------------------------------------------------- #
+#  Themes (View → Theme)
+# --------------------------------------------------------------------------- #
+THEMES = ("system", "light", "dark")
+_SYSTEM_LOOK = {}   # style name and palette Qt chose at startup, to restore "System"
+
+SYNTAX_COLORS = {
+    #            environments  sectioning  input/include  commands   brackets   math       comments
+    "light": dict(env="#a626a4", sect="#b06d00", incl="#d14d00", cmd="#1f62c4", brace="#8a8a8a",
+                  math="#1d8a4a", comment="#8a8a8a"),
+    "dark":  dict(env="#d19af0", sect="#f0c040", incl="#ff9a52", cmd="#6cb6ff", brace="#8f8f8f",
+                  math="#62d38f", comment="#7f8a8f"),
+}
+
+
+def _palette(colors):
+    pal = QPalette()
+    roles = {
+        QPalette.Window: "window", QPalette.WindowText: "text", QPalette.Base: "base",
+        QPalette.AlternateBase: "alt", QPalette.Text: "text", QPalette.Button: "button",
+        QPalette.ButtonText: "text", QPalette.BrightText: "bright", QPalette.Highlight: "highlight",
+        QPalette.HighlightedText: "hl_text", QPalette.ToolTipBase: "tooltip", QPalette.ToolTipText: "text",
+        QPalette.PlaceholderText: "placeholder", QPalette.Link: "link", QPalette.Light: "light",
+        QPalette.Midlight: "midlight", QPalette.Mid: "mid", QPalette.Dark: "dark", QPalette.Shadow: "shadow",
+    }
+    for role, key in roles.items():
+        pal.setColor(role, QColor(colors[key]))
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        pal.setColor(QPalette.Disabled, role, QColor(colors["disabled"]))
+    pal.setColor(QPalette.Disabled, QPalette.Highlight, QColor(colors["mid"]))
+    return pal
+
+
+LIGHT_PALETTE = dict(window="#f3f3f3", text="#1f1f1f", base="#ffffff", alt="#f2f4f7", button="#f3f3f3",
+                     bright="#ffffff", highlight="#2f6fd6", hl_text="#ffffff", tooltip="#ffffdc",
+                     placeholder="#8a8a8a", link="#1f62c4", light="#ffffff", midlight="#e6e6e6",
+                     mid="#b8b8b8", dark="#a0a0a0", shadow="#6e6e6e", disabled="#a0a0a0")
+DARK_PALETTE = dict(window="#2b2d30", text="#e3e3e3", base="#1e1f22", alt="#25272b", button="#34363a",
+                    bright="#ffffff", highlight="#3574f0", hl_text="#ffffff", tooltip="#3c3f41",
+                    placeholder="#7f8389", link="#6cb6ff", light="#4a4d52", midlight="#3e4146",
+                    mid="#2a2c2f", dark="#1b1c1e", shadow="#000000", disabled="#6f737a")
+
+
+def _dark_checkbox_css():
+    tick = resource_path("assets", "check-light.svg").replace("\\", "/")
+    return ("QCheckBox::indicator { width: 13px; height: 13px; border: 1px solid #8a8f98; border-radius: 3px;"
+            " background: #1e1f22; }"
+            "QCheckBox::indicator:hover { border-color: #b4b9c2; }"
+            "QCheckBox::indicator:checked { background: #3574f0; border-color: #3574f0;"
+            f" image: url({tick}); }}"
+            "QCheckBox::indicator:disabled { border-color: #4a4d52; background: #2b2d30; }")
+
+
+def is_dark():
+    return QApplication.palette().color(QPalette.Window).lightness() < 128
+
+
+def apply_theme(mode):
+    """mode: 'system' (follow Windows), 'light' or 'dark'. Safe to call while the app is running."""
+    app = QApplication.instance()
+    if not _SYSTEM_LOOK:
+        _SYSTEM_LOOK["style"] = app.style().name() or "Fusion"
+        _SYSTEM_LOOK["palette"] = QPalette(app.palette())
+    hints = app.styleHints()
+    if mode in ("light", "dark"):
+        if app.style().name().lower() != "fusion":
+            app.setStyle(QStyleFactory.create("Fusion"))
+        app.setPalette(_palette(LIGHT_PALETTE if mode == "light" else DARK_PALETTE))
+        # Fusion draws checkbox outlines darker than the window, which vanishes on a dark background
+        app.setStyleSheet(_dark_checkbox_css() if mode == "dark" else "")
+        try:  # also tells Windows, so the title bar matches
+            hints.setColorScheme(Qt.ColorScheme.Light if mode == "light" else Qt.ColorScheme.Dark)
+        except AttributeError:
+            pass
+    else:
+        try:
+            hints.setColorScheme(Qt.ColorScheme.Unknown)
+        except AttributeError:
+            pass
+        app.setStyleSheet("")
+        if app.style().name().lower() != _SYSTEM_LOOK["style"].lower():
+            style = QStyleFactory.create(_SYSTEM_LOOK["style"])
+            if style is not None:
+                app.setStyle(style)
+        app.setPalette(_SYSTEM_LOOK["palette"])
+
+
+# --------------------------------------------------------------------------- #
 #  Syntax highlighting
 # --------------------------------------------------------------------------- #
 class LatexHighlighter(QSyntaxHighlighter):
     def __init__(self, doc):
         super().__init__(doc)
+        self.comment_re = QRegularExpression(r"(?<!\\)%.*$")
+        self.update_colors(rehighlight=False)
+
+    def update_colors(self, rehighlight=True):
+        """Pick the syntax colors for the current (light or dark) theme."""
+        c = SYNTAX_COLORS["dark" if is_dark() else "light"]
 
         def fmt(color, bold=False, italic=False):
             f = QTextCharFormat()
@@ -139,17 +233,18 @@ class LatexHighlighter(QSyntaxHighlighter):
             return f
 
         self.rules = [
-            (QRegularExpression(r"\\(begin|end)\{[^}]*\}"), fmt("#c678dd", bold=True)),
+            (QRegularExpression(r"\\(begin|end)\{[^}]*\}"), fmt(c["env"], bold=True)),
             (QRegularExpression(r"\\(part|chapter|section|subsection|subsubsection|paragraph)\*?"),
-             fmt("#e5a50a", bold=True)),
+             fmt(c["sect"], bold=True)),
             (QRegularExpression(r"\\(input|include|includegraphics|bibliography|addbibresource)\b"),
-             fmt("#e66100", bold=True)),
-            (QRegularExpression(r"\\[A-Za-z@]+\*?|\\."), fmt("#3584e4")),
-            (QRegularExpression(r"[{}\[\]]"), fmt("#909090")),
-            (QRegularExpression(r"\$[^$\n]*\$|\\\([^\n]*?\\\)"), fmt("#26a269")),
+             fmt(c["incl"], bold=True)),
+            (QRegularExpression(r"\\[A-Za-z@]+\*?|\\."), fmt(c["cmd"])),
+            (QRegularExpression(r"[{}\[\]]"), fmt(c["brace"])),
+            (QRegularExpression(r"\$[^$\n]*\$|\\\([^\n]*?\\\)"), fmt(c["math"])),
         ]
-        self.comment_fmt = fmt("#8a8a8a", italic=True)
-        self.comment_re = QRegularExpression(r"(?<!\\)%.*$")
+        self.comment_fmt = fmt(c["comment"], italic=True)
+        if rehighlight:
+            self.rehighlight()
 
     def highlightBlock(self, text):
         for regex, f in self.rules:
@@ -450,7 +545,8 @@ class FindBar(QWidget):
             return
         if n == 0:
             self.count.setText("No results")
-            self.field.setStyleSheet("QLineEdit { background: #f8d7d7; color: #222; }")
+            self.field.setStyleSheet("QLineEdit { background: #5c2b2e; color: #ffffff; }" if is_dark()
+                                     else "QLineEdit { background: #f8d7d7; color: #222222; }")
             return
         self.field.setStyleSheet("")
         cur = ed.textCursor()
@@ -1091,6 +1187,17 @@ class MainWindow(QMainWindow):
             "Ctrl+PgUp", m_view)
         act("Show/Hide Project Tree", self.toggle_tree, "Ctrl+B", m_view)
         act("Show/Hide Problems Panel", self.toggle_bottom, "Ctrl+Shift+M", m_view)
+        m_view.addSeparator()
+        m_theme = m_view.addMenu("Theme")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        current = self.settings.value("theme", "system")
+        for key, label in (("light", "Light"), ("dark", "Dark"), ("system", "System (follow Windows)")):
+            a = QAction(label, self, checkable=True)
+            a.setChecked(key == current)
+            a.triggered.connect(lambda _c=False, k=key: self.set_theme(k))
+            group.addAction(a)
+            m_theme.addAction(a)
         act("Keyboard Shortcuts", self.show_shortcuts, "F1", m_help)
         m_help.addSeparator()
         act(f"About {APP_NAME}", self.show_about, None, m_help)
@@ -1222,6 +1329,18 @@ class MainWindow(QMainWindow):
             "<a href='https://www.gnu.org/licenses/gpl-3.0.html'>GNU General Public License v3</a> "
             "or later. It comes with ABSOLUTELY NO WARRANTY.</p>"
             "<p>Built with Qt and PySide6 (LGPLv3).</p>")
+
+    def set_theme(self, mode):
+        self.settings.setValue("theme", mode)
+        apply_theme(mode)
+        for i in range(self.tabs.count()):
+            ed = self.tabs.widget(i)
+            if getattr(ed, "highlighter", None):
+                ed.highlighter.update_colors()
+            ed._highlight_current_line()
+            ed.number_area.update()
+        self.find_bar._update_count(self.current_editor())
+        self.status.showMessage(f"Theme: {mode.capitalize()}", 2000)
 
     def toggle_bottom(self):
         self.bottom_hidden = not self.bottom_hidden
@@ -2097,6 +2216,7 @@ def main():
     if os.path.exists(icon):
         from PySide6.QtGui import QIcon
         app.setWindowIcon(QIcon(icon))
+    apply_theme(QSettings(APP_NAME, APP_NAME).value("theme", "system"))
     w = MainWindow(sys.argv[1] if len(sys.argv) > 1 else None)
     w.show()
     sys.exit(app.exec())
