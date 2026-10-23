@@ -5,6 +5,8 @@ Write upcoming changes under **Unreleased**; `release.ps1` turns that section in
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-10-23
+
 ### Added
 - **Export PDF** (*File → Export PDF…*, `Ctrl+E`, or the toolbar button): save the PDF under any name and folder, with its **title, authors, subject and keywords** set. These are the properties Windows Explorer, Acrobat and browsers show. Title and authors are filled in from the document's `\title{}` and `\author{}`, accents included. Choices are remembered per project, and the document is compiled first if it has unsaved or newer changes.
 
