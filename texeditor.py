@@ -1153,6 +1153,80 @@ def write_pdf_with_properties(src, dst, title, authors, subject, keywords):
         raise
 
 
+class ExportDialog(QDialog):
+    """Folder, title and authors. The file is named after the title."""
+
+    def __init__(self, parent, folder, title, authors):
+        super().__init__(parent)
+        self.setWindowTitle("Export PDF")
+        self.resize(560, 0)
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.folder = QLineEdit(folder)
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._browse)
+        row = QWidget()
+        rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.addWidget(self.folder, 1)
+        rl.addWidget(browse)
+        form.addRow("Folder:", row)
+
+        self.title = QLineEdit(title)
+        self.title.setPlaceholderText("Document title (also the file name)")
+        form.addRow("Title:", self.title)
+        self.authors = QPlainTextEdit("\n".join(authors))
+        self.authors.setPlaceholderText("One author per line")
+        self.authors.setFixedHeight(self.authors.fontMetrics().lineSpacing() * 4 + 12)
+        self.authors.setTabChangesFocus(True)
+        form.addRow("Authors:", self.authors)
+        lay.addLayout(form)
+
+        self.target = QLabel()
+        self.target.setWordWrap(True)
+        self.target.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.target)
+
+        box = QDialogButtonBox(QDialogButtonBox.Cancel)
+        self.export_btn = box.addButton("Export", QDialogButtonBox.AcceptRole)
+        self.export_btn.setDefault(True)
+        box.accepted.connect(self._accept)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+        self.folder.textChanged.connect(self._update_target)
+        self.title.textChanged.connect(self._update_target)
+        self._update_target()
+        self.title.setFocus()
+        self.title.selectAll()
+
+    def path(self):
+        return os.path.join(self.folder.text().strip(), safe_filename(self.title.text()) + ".pdf")
+
+    def _update_target(self):
+        ok = bool(self.title.text().strip())
+        self.export_btn.setEnabled(ok and bool(self.folder.text().strip()))
+        self.target.setText(f"<small>Saves as: <b>{self.path().replace('&', '&amp;').replace('<', '&lt;')}</b></small>"
+                            if ok else "<small>Enter a title: it's also the file name.</small>")
+
+    def _browse(self):
+        d = QFileDialog.getExistingDirectory(self, "Export to folder", self.folder.text())
+        if d:
+            self.folder.setText(d)
+
+    def _accept(self):
+        folder = self.folder.text().strip()
+        if not os.path.isdir(folder):
+            QMessageBox.warning(self, "Export PDF", f"The folder doesn't exist:\n{folder}")
+            return
+        self.accept()
+
+    def values(self):
+        authors = [a.strip() for a in self.authors.toPlainText().splitlines() if a.strip()]
+        return self.folder.text().strip(), self.title.text().strip(), authors
+
+
 # --------------------------------------------------------------------------- #
 #  Updates from GitHub Releases
 # --------------------------------------------------------------------------- #
@@ -2388,27 +2462,42 @@ class MainWindow(QMainWindow):
         return False
 
     def export_pdf(self):
-        """Ask for a folder; save '<document title>.pdf' there with the title and authors set."""
+        """Ask for folder, title and authors; save '<title>.pdf' there with those properties."""
         if not self.main:
             QMessageBox.information(self, "Export PDF", "Open a project with a main file first.")
             return
-        title, authors = doc_title_authors(self.main)
-        name = (safe_filename(title) if title else os.path.splitext(os.path.basename(self.main))[0]) + ".pdf"
+        doc_title, doc_authors = doc_title_authors(self.main)
         key = settings_key("exportDir", self.root or os.path.dirname(self.main))
-        last_folder = self.settings.value(key, "")
-        if not last_folder or not os.path.isdir(last_folder):
-            last_folder = os.path.dirname(self.main)
-        folder = QFileDialog.getExistingDirectory(self, f"Export “{name}” to folder", last_folder)
-        if not folder:
+        folder = self.settings.value(key, "")
+        if not folder or not os.path.isdir(folder):
+            folder = os.path.dirname(self.main)
+        # Reuse the title/authors typed last time, unless the document's \title/\author changed since
+        try:
+            saved = json.loads(self.settings.value(key + "/fields", "") or "{}")
+        except ValueError:
+            saved = {}
+        if saved.get("doc") == [doc_title, doc_authors]:
+            title, authors = saved.get("title", doc_title), saved.get("authors", doc_authors)
+        else:
+            title, authors = doc_title, doc_authors
+        if not title:
+            title = os.path.splitext(os.path.basename(self.main))[0]
+
+        dlg = ExportDialog(self, folder, title, authors)
+        if dlg.exec() != QDialog.Accepted:
             return
-        path = os.path.join(folder, name)
+        folder, title, authors = dlg.values()
+        path = dlg.path()
         last_path = self.settings.value(key + "/lastFile", "")
         if os.path.exists(path) and norm(path) != norm(last_path or "") and norm(path) != norm(self._pdf_path()):
-            r = QMessageBox.question(self, "Export PDF", f"{name} already exists in that folder. Replace it?")
+            r = QMessageBox.question(self, "Export PDF", f"{os.path.basename(path)} already exists in that folder. "
+                                     "Replace it?")
             if r != QMessageBox.Yes:
                 return
         self.settings.setValue(key, folder)
         self.settings.setValue(key + "/lastFile", path)
+        self.settings.setValue(key + "/fields", json.dumps({"doc": [doc_title, doc_authors],
+                                                            "title": title, "authors": authors}))
         params = {"path": path, "title": title, "authors": authors, "subject": "", "keywords": ""}
         if self._pdf_is_stale():
             self._pending_export = params

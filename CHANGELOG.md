@@ -5,6 +5,9 @@ Write upcoming changes under **Unreleased**; `release.ps1` turns that section in
 
 ## [Unreleased]
 
+### Changed
+- **Export PDF** asks for the **folder, title and authors** in one small window. The file is named after the title, with a live preview of the full path. Title and authors start from the document (`\title`/`\author`, or hyperref's `pdftitle`/`pdfauthor`). Your edits are remembered per project until the document's own title or authors change.
+
 ## [1.0.7] - 2026-10-23
 
 ### Changed
