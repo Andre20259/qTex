@@ -36,9 +36,10 @@ Windows may say *"Windows protected your PC"* the first time, because the app is
 - **PDF ↔ source.** *Sync PDF to Cursor* (`Ctrl+J`) scrolls the PDF to the cursor's line and outlines it. The **Highlight source** button on the PDF toolbar highlights the source line under your mouse as you move over the PDF. `Ctrl+click` in the PDF jumps to that line. Both work across all files in the project.
 - **PDF navigation.** Mouse wheel scrolls, `Shift` + wheel scrolls sideways (when zoomed in), `Ctrl` + wheel zooms.
 - **Search** with `Ctrl+F`: all matches are highlighted; `Enter`/`Shift+Enter` (or `F3`/`Shift+F3`) step through them. Options for match case and whole words. `Esc` closes the bar.
-- **More room:** hide the project tree with `Ctrl+B` and the Problems/Log panel with `Ctrl+Shift+M` (or its ✕). Both stay hidden until you bring them back.
+- **More room:** hide the project tree with `Ctrl+Shift+E`, the formatting toolbar from the View menu, and the Problems/Log panel with `Ctrl+Shift+M` (or its ✕). Both stay hidden until you bring them back.
 - **Light or dark.** *View → Theme* switches between Light, Dark and System (follows Windows). The choice is remembered.
 - **Export PDF** (`Ctrl+E`): choose the folder, title and authors; QTeX saves `<title>.pdf` there with the title and authors set as its properties (what Windows Explorer and PDF readers show). Title and authors start from `\title{}` and `\author{}` (or hyperref's `pdftitle`/`pdfauthor`), and your edits are remembered per project.
+- **Overleaf shortcuts and toolbar.** The same keys as Overleaf: `Ctrl+B` bold, `Ctrl+I` italics, `Ctrl+D` delete line, `Alt+↑/↓` move lines, `Ctrl+Shift+L` go to line, `Ctrl+S` save and compile, and more. A formatting toolbar above the editor (and the *Format* menu) inserts bold, italics, math, links, bullet and numbered lists, tables and figures. Select some lines and click *• List* to turn them into `\item`s.
 - **Right-click in the tree** to create files and folders, rename, delete (to the recycle bin), copy a path relative to the main file (for `\input`/`\includegraphics`), or show it in Explorer. Images and other non-text files open in your default app.
 - Open tabs, engine and main file are restored when you reopen a project. *File → Recent Projects* lists the last ten.
 - Files changed by another program reload automatically if you have no unsaved edits in them.
@@ -51,21 +52,32 @@ Tick **latexmk** in the toolbar to use latexmk instead. MiKTeX's latexmk needs P
 
 ### Shortcuts
 
+Editing shortcuts follow [Overleaf's](https://docs.overleaf.com/navigating-in-the-editor/keyboard-shortcuts). Overleaf has no keys for lists, tables, math or links (only toolbar buttons), so QTeX picks ones that also work on non-US keyboards. Press `F1` in the app for the full, searchable list.
+
 | Action | Keys |
 |---|---|
-| Compile | `Ctrl+Enter` |
+| Compile | `Ctrl+Enter` or `Ctrl+.` |
+| Save and compile | `Ctrl+S` |
+| **Bold** / *italics* | `Ctrl+B` / `Ctrl+I` |
+| Inline math `$…$` / link `\href` | `Ctrl+M` / `Ctrl+K` |
+| Bullet list / numbered list | `Ctrl+Shift+I` / `Ctrl+Shift+N` |
+| Table | `Ctrl+Shift+T` |
+| Indent / unindent | `Tab` / `Shift+Tab` with a selection, or `Ctrl+]` / `Ctrl+[` |
+| Toggle comment | `Ctrl+/` |
+| Delete line / duplicate | `Ctrl+D` / `Ctrl+Shift+D` |
+| Move lines up / down | `Alt+↑` / `Alt+↓` |
+| Copy lines up / down | `Alt+Shift+↑` / `Alt+Shift+↓` |
+| Upper / lower case | `Ctrl+U` / `Ctrl+Shift+U` |
+| Go to line | `Ctrl+Shift+L` |
+| Find / next / previous | `Ctrl+F` / `Ctrl+G` or `F3` / `Ctrl+Shift+G` or `Shift+F3` |
 | Sync PDF to cursor | `Ctrl+J` |
 | Jump from PDF to source | `Ctrl+click` in the PDF |
 | Scroll PDF sideways / zoom PDF | `Shift` + wheel / `Ctrl` + wheel |
 | Open folder / file | `Ctrl+Shift+O` / `Ctrl+O` |
-| New file | `Ctrl+N` |
-| Save / Save all | `Ctrl+S` / `Ctrl+Alt+S` |
+| New file / save all | `Ctrl+N` / `Ctrl+Alt+S` |
 | Export PDF | `Ctrl+E` |
 | Close tab / next / previous | `Ctrl+W` / `Ctrl+PgDown` / `Ctrl+PgUp` |
-| Toggle comment | `Ctrl+/` |
-| Find / next / previous | `Ctrl+F` / `F3` (or `Enter`) / `Shift+F3` (or `Shift+Enter`) |
-| Show/hide project tree | `Ctrl+B` |
-| Show/hide Problems panel | `Ctrl+Shift+M` |
+| Show/hide project tree / Problems panel | `Ctrl+Shift+E` / `Ctrl+Shift+M` |
 | List all shortcuts | `F1` (Help → Keyboard Shortcuts) |
 
 ## Development

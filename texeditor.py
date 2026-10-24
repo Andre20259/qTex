@@ -43,7 +43,7 @@ from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QComboBox, QDialog, QDialogButtonBox,
                                QFileDialog, QFileSystemModel, QHBoxLayout,
-                               QFormLayout, QHeaderView, QLineEdit, QProgressDialog,
+                               QFormLayout, QHeaderView, QLineEdit, QProgressDialog, QSpinBox,
                                QStyleFactory, QTextBrowser, QToolButton,
                                QTreeWidget, QTreeWidgetItem,
                                QInputDialog, QLabel, QListWidget,
@@ -425,7 +425,261 @@ class CodeEditor(QPlainTextEdit):
         if e.key() == Qt.Key_Slash and e.modifiers() & Qt.ControlModifier:
             self.toggle_comment()
             return
+        if e.key() == Qt.Key_Backtab or (e.key() == Qt.Key_Tab and e.modifiers() & Qt.ShiftModifier):
+            self.indent_lines(more=False)
+            return
+        if e.key() == Qt.Key_Tab and not e.modifiers() and self.textCursor().hasSelection():
+            self.indent_lines(more=True)
+            return
         super().keyPressEvent(e)
+
+    # ---------------------------------------------------------------- editing commands (Overleaf-style)
+    INDENT = "    "
+
+    def _line_range(self):
+        """(first_block, last_block) covered by the cursor/selection (a selection ending at column 0
+        of a line doesn't include that line)."""
+        c = self.textCursor()
+        doc = self.document()
+        start, end = sorted((c.selectionStart(), c.selectionEnd()))
+        first = doc.findBlock(start)
+        last = doc.findBlock(end)
+        if c.hasSelection() and end == last.position() and last != first:
+            last = last.previous()
+        return first, last
+
+    def _select_blocks(self, first, last):
+        c = QTextCursor(self.document())
+        c.setPosition(first.position())
+        c.setPosition(last.position() + len(last.text()), QTextCursor.KeepAnchor)
+        return c
+
+    def wrap_command(self, cmd):
+        """Bold/italic: wrap the selection in \\cmd{...}, or unwrap it if it's already wrapped (toggle).
+        With no selection, insert \\cmd{} and put the cursor inside."""
+        c = self.textCursor()
+        doc_text = self.toPlainText()
+        opener = "\\" + cmd + "{"
+        c.beginEditBlock()
+        if c.hasSelection():
+            a, b = c.selectionStart(), c.selectionEnd()
+            sel = c.selectedText().replace("\u2029", "\n")
+            inner = re.fullmatch(re.escape(opener) + r"(.*)\}", sel, re.S)
+            if inner:                                            # selection is "\cmd{text}" -> "text"
+                c.insertText(inner.group(1))
+                c.setPosition(a)
+                c.setPosition(a + len(inner.group(1)), QTextCursor.KeepAnchor)
+            elif doc_text[max(0, a - len(opener)):a] == opener and doc_text[b:b + 1] == "}":   # "\cmd{[text]}"
+                c.setPosition(b)
+                c.setPosition(b + 1, QTextCursor.KeepAnchor)
+                c.removeSelectedText()
+                c.setPosition(a - len(opener))
+                c.setPosition(a, QTextCursor.KeepAnchor)
+                c.removeSelectedText()
+                c.setPosition(a - len(opener))
+                c.setPosition(b - len(opener), QTextCursor.KeepAnchor)
+            else:
+                c.insertText(opener + sel + "}")
+                c.setPosition(a + len(opener))
+                c.setPosition(a + len(opener) + len(sel), QTextCursor.KeepAnchor)
+        else:
+            pos = c.position()
+            if doc_text[max(0, pos - len(opener)):pos] == opener and doc_text[pos:pos + 1] == "}":
+                c.setPosition(pos - len(opener))              # empty "\cmd{|}" -> remove it
+                c.setPosition(pos + 1, QTextCursor.KeepAnchor)
+                c.removeSelectedText()
+            else:
+                c.insertText(opener + "}")
+                c.setPosition(c.position() - 1)
+        c.endEditBlock()
+        self.setTextCursor(c)
+
+    def wrap_text(self, before, after, placeholder=""):
+        """Surround the selection (or a placeholder) with before/after, e.g. $...$."""
+        c = self.textCursor()
+        sel = c.selectedText().replace("\u2029", "\n") or placeholder
+        a = c.selectionStart()
+        c.beginEditBlock()
+        c.insertText(before + sel + after)
+        c.endEditBlock()
+        c.setPosition(a + len(before))
+        c.setPosition(a + len(before) + len(sel), QTextCursor.KeepAnchor)
+        self.setTextCursor(c)
+
+    def insert_block(self, text, cursor_marker="¦"):
+        """Insert a multi-line snippet on its own lines, indented like the current line.
+        cursor_marker marks where the cursor ends up."""
+        c = self.textCursor()
+        block = c.block()
+        indent = re.match(r"\s*", block.text()).group(0)
+        lines = [(indent + l if l else l) for l in text.split("\n")]
+        snippet = "\n".join(lines)
+        c.beginEditBlock()
+        if c.hasSelection():
+            c.removeSelectedText()
+        if c.block().text().strip():                 # not on an empty line: start a new one
+            c.movePosition(QTextCursor.EndOfBlock)
+            c.insertText("\n")
+        else:
+            c.movePosition(QTextCursor.StartOfBlock)
+            c.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+            c.removeSelectedText()
+        start = c.position()
+        offset = snippet.find(cursor_marker)
+        c.insertText(snippet.replace(cursor_marker, ""))
+        c.endEditBlock()
+        if offset >= 0:
+            c.setPosition(start + offset)
+        self.setTextCursor(c)
+
+    def make_list(self, env):
+        """Turn the selected lines into an itemize/enumerate list, or insert an empty one."""
+        c = self.textCursor()
+        if c.hasSelection():
+            first, last = self._line_range()
+            lines, b = [], first
+            while True:
+                lines.append(b.text())
+                if b == last:
+                    break
+                b = b.next()
+            indent = re.match(r"\s*", lines[0]).group(0)
+            items = [l.strip() for l in lines if l.strip()]
+            items = [re.sub(r"^(\\item\s*|[-*•]\s+|\d+[.)]\s+)", "", it) for it in items]   # drop existing bullets
+            body = "\n".join(f"{indent}{self.INDENT}\\item {it}" for it in items)
+            text = f"{indent}\\begin{{{env}}}\n{body}\n{indent}\\end{{{env}}}"
+            sc = self._select_blocks(first, last)
+            sc.beginEditBlock()
+            sc.insertText(text)
+            sc.endEditBlock()
+            self.setTextCursor(sc)
+        else:
+            self.insert_block(f"\\begin{{{env}}}\n{self.INDENT}\\item ¦\n\\end{{{env}}}")
+
+    def insert_table(self, rows, cols):
+        I = self.INDENT
+        spec = "|" + "|".join("c" * cols) + "|"
+        row = " & ".join([""] * cols)
+        lines = ["\\begin{table}[h]", f"{I}\\centering", f"{I}\\begin{{tabular}}{{{spec}}}", f"{I}{I}\\hline"]
+        for r in range(rows):
+            cells = ["¦" if r == 0 and k == 0 else "" for k in range(cols)]
+            lines.append(f"{I}{I}" + " & ".join(cells) + " \\\\")
+            lines.append(f"{I}{I}\\hline")
+        lines += [f"{I}\\end{{tabular}}", f"{I}\\caption{{Caption}}", f"{I}\\label{{tab:label}}", "\\end{table}"]
+        self.insert_block("\n".join(lines))
+
+    def indent_lines(self, more=True):
+        first, last = self._line_range()
+        c = QTextCursor(self.document())
+        c.beginEditBlock()
+        b = first
+        while True:
+            t = b.text()
+            c.setPosition(b.position())
+            if more:
+                if t.strip() or first == last:
+                    c.insertText(self.INDENT)
+            else:
+                n = 1 if t.startswith("\t") else min(len(self.INDENT), len(t) - len(t.lstrip(" ")))
+                if n:
+                    c.setPosition(b.position() + n, QTextCursor.KeepAnchor)
+                    c.removeSelectedText()
+            if b == last:
+                break
+            b = b.next()
+        c.endEditBlock()
+        if self.textCursor().hasSelection() or first != last:
+            self.setTextCursor(self._select_blocks(first, last))
+
+    def delete_lines(self):
+        first, last = self._line_range()
+        c = self._select_blocks(first, last)
+        c.beginEditBlock()
+        if last.next().isValid():
+            c.setPosition(last.next().position(), QTextCursor.KeepAnchor)
+        elif first.previous().isValid():
+            c.setPosition(first.previous().position() + len(first.previous().text()))
+            c.setPosition(last.position() + len(last.text()), QTextCursor.KeepAnchor)
+        c.removeSelectedText()
+        c.endEditBlock()
+        self.setTextCursor(c)
+
+    def duplicate(self):
+        """Duplicate the selection, or the current line when nothing is selected."""
+        c = self.textCursor()
+        c.beginEditBlock()
+        if c.hasSelection():
+            a, b = c.selectionStart(), c.selectionEnd()
+            sel = c.selectedText().replace("\u2029", "\n")
+            c.setPosition(b)
+            c.insertText(sel)
+            c.setPosition(b)
+            c.setPosition(b + len(sel), QTextCursor.KeepAnchor)
+        else:
+            col = c.positionInBlock()
+            line = c.block().text()
+            c.movePosition(QTextCursor.EndOfBlock)
+            c.insertText("\n" + line)
+            c.setPosition(c.block().position() + col)
+        c.endEditBlock()
+        self.setTextCursor(c)
+
+    def move_lines(self, up=True, copy=False):
+        """Alt+Up/Down moves the current/selected lines; with copy (Alt+Shift+Up/Down) copies them."""
+        first, last = self._line_range()
+        if not copy and ((up and not first.previous().isValid()) or (not up and not last.next().isValid())):
+            return
+        doc = self.document()
+        cur = self.textCursor()
+        start = first.position()
+        end = last.position() + len(last.text())
+        rel_a, rel_p = cur.anchor() - start, cur.position() - start
+        text = self._select_blocks(first, last).selectedText().replace("\u2029", "\n")
+        c = QTextCursor(doc)
+        c.beginEditBlock()
+        if copy:
+            if up:                      # copy above; cursor stays on the upper copy
+                c.setPosition(start)
+                c.insertText(text + "\n")
+                new_start = start
+            else:                       # copy below; cursor moves to the lower copy
+                c.setPosition(end)
+                c.insertText("\n" + text)
+                new_start = end + 1
+        elif up:
+            prev = first.previous()
+            p_start, p_text = prev.position(), prev.text()
+            c.setPosition(p_start)
+            c.setPosition(end, QTextCursor.KeepAnchor)
+            c.insertText(text + "\n" + p_text)
+            new_start = p_start
+        else:
+            nxt = last.next()
+            n_text = nxt.text()
+            c.setPosition(start)
+            c.setPosition(nxt.position() + len(n_text), QTextCursor.KeepAnchor)
+            c.insertText(n_text + "\n" + text)
+            new_start = start + len(n_text) + 1
+        c.endEditBlock()
+        nc = QTextCursor(doc)
+        nc.setPosition(new_start + rel_a)
+        nc.setPosition(new_start + rel_p, QTextCursor.KeepAnchor)
+        self.setTextCursor(nc)
+
+    def change_case(self, upper=True):
+        c = self.textCursor()
+        if not c.hasSelection():
+            c.select(QTextCursor.WordUnderCursor)
+        if not c.hasSelection():
+            return
+        a, b = c.selectionStart(), c.selectionEnd()
+        t = c.selectedText()
+        c.beginEditBlock()
+        c.insertText(t.upper() if upper else t.lower())
+        c.endEditBlock()
+        c.setPosition(a)
+        c.setPosition(b, QTextCursor.KeepAnchor)
+        self.setTextCursor(c)
 
     def toggle_comment(self):
         cur = self.textCursor()
@@ -1437,7 +1691,7 @@ class MainWindow(QMainWindow):
         self._build = {}
         self._pending_export = None
         self._step = None
-        self.tree_hidden = self.settings.value("treeHidden", "false") == "true"  # user hid it with Ctrl+B
+        self.tree_hidden = self.settings.value("treeHidden", "false") == "true"  # user hid it (Ctrl+Shift+E)
         self._cite_hashes = {}       # main file -> hash of \citation lines when bibtex last ran
         self._idx_hashes = {}
 
@@ -1505,6 +1759,10 @@ class MainWindow(QMainWindow):
         ea = QVBoxLayout(editor_area)
         ea.setContentsMargins(0, 0, 0, 0)
         ea.setSpacing(0)
+        self.format_bar = QToolBar("Format")
+        self.format_bar.setMovable(False)
+        self.format_bar.setIconSize(QSize(16, 16))
+        ea.addWidget(self.format_bar)
         ea.addWidget(self.center)
         ea.addWidget(self.find_bar)
         esc = QShortcut(QKeySequence(Qt.Key_Escape), editor_area, context=Qt.WidgetWithChildrenShortcut)
@@ -1578,6 +1836,7 @@ class MainWindow(QMainWindow):
         self.addToolBar(tb)
         m_file = self.menuBar().addMenu("&File")
         m_edit = self.menuBar().addMenu("&Edit")
+        m_format = self.menuBar().addMenu("F&ormat")
         m_build = self.menuBar().addMenu("&Build")
         m_view = self.menuBar().addMenu("&View")
         m_help = self.menuBar().addMenu("&Help")
@@ -1598,7 +1857,8 @@ class MainWindow(QMainWindow):
         act("New Project…", self.new_project, None, m_file)
         act("New File…", self.new_file, QKeySequence.New, m_file, True)
         m_file.addSeparator()
-        act("Save", self.save_current, QKeySequence.Save, m_file, True)
+        act("Save", self.save_current, None, m_file, True)
+        act("Save and Compile", self.save_and_compile, QKeySequence.Save, m_file)
         act("Save All", self.save_all, "Ctrl+Alt+S", m_file)
         m_file.addSeparator()
         act("Export PDF…", self.export_pdf, "Ctrl+E", m_file)
@@ -1609,13 +1869,74 @@ class MainWindow(QMainWindow):
         act("Quit", self.close, QKeySequence.Quit, m_file)
 
         act("Find…", lambda: self.find_bar.open_bar(), QKeySequence.Find, m_edit)
-        act("Find Next", lambda: self.find_bar.find_next(), QKeySequence.FindNext, m_edit)
-        act("Find Previous", lambda: self.find_bar.find_prev(), QKeySequence.FindPrevious, m_edit)
+        a = act("Find Next", lambda: self.find_bar.find_next(), None, m_edit)
+        a.setShortcuts([QKeySequence(QKeySequence.FindNext), QKeySequence("Ctrl+G")])
+        a = act("Find Previous", lambda: self.find_bar.find_prev(), None, m_edit)
+        a.setShortcuts([QKeySequence(QKeySequence.FindPrevious), QKeySequence("Ctrl+Shift+G")])
+        act("Go to Line…", self.go_to_line, "Ctrl+Shift+L", m_edit)
+        m_edit.addSeparator()
+        act("Delete Line", lambda: self._ed("delete_lines"), "Ctrl+D", m_edit)
+        act("Duplicate", lambda: self._ed("duplicate"), "Ctrl+Shift+D", m_edit)
+        act("Move Line Up", lambda: self._ed("move_lines", up=True), "Alt+Up", m_edit)
+        act("Move Line Down", lambda: self._ed("move_lines", up=False), "Alt+Down", m_edit)
+        act("Copy Line Up", lambda: self._ed("move_lines", up=True, copy=True), "Alt+Shift+Up", m_edit)
+        act("Copy Line Down", lambda: self._ed("move_lines", up=False, copy=True), "Alt+Shift+Down", m_edit)
         m_edit.addSeparator()
         act("Toggle Comment", lambda: self.current_editor() and self.current_editor().toggle_comment(), "Ctrl+/", m_edit)
 
+        # ---- Format menu + the formatting toolbar above the editor (like Overleaf's)
+        fb = self.format_bar
+
+        def fmt(text, tip, slot, shortcut, bar=True, font=None):
+            a = act(text, slot, shortcut, m_format)
+            if shortcut:
+                a.setToolTip(f"{tip} ({a.shortcut().toString(QKeySequence.NativeText)})")
+            else:
+                a.setToolTip(tip)
+            if bar:
+                fb.addAction(a)
+                if font:
+                    w = fb.widgetForAction(a)
+                    f = w.font()
+                    f.setBold(font == "bold")
+                    f.setItalic(font == "italic")
+                    w.setFont(f)
+            return a
+
+        b = fmt("Bold", "Bold — \\textbf{…}", lambda: self._ed("wrap_command", "textbf"), "Ctrl+B", font="bold")
+        i = fmt("Italic", "Italic — \\textit{…}", lambda: self._ed("wrap_command", "textit"), "Ctrl+I", font="italic")
+        fb.widgetForAction(b).setText("B")
+        fb.widgetForAction(i).setText("I")
+        fb.addSeparator()
+        fmt("Inline Math", "Inline math — $…$", lambda: self._ed("wrap_text", "$", "$"), "Ctrl+M")
+        fb.widgetForAction(m_format.actions()[-1]).setText("$x$")
+        fmt("Display Math", "Display math — \\[ … \\]",
+            lambda: self._ed("insert_block", "\\[\n    ¦\n\\]"), None)
+        fb.widgetForAction(m_format.actions()[-1]).setText("\\[x\\]")
+        fmt("Link…", "Link — \\href{url}{text}", self.insert_link, "Ctrl+K")
+        m_format.addSeparator()
+        fb.addSeparator()
+        fmt("Bullet List", "Bullet list — itemize", lambda: self._ed("make_list", "itemize"), "Ctrl+Shift+I")
+        fb.widgetForAction(m_format.actions()[-1]).setText("• List")
+        fmt("Numbered List", "Numbered list — enumerate", lambda: self._ed("make_list", "enumerate"), "Ctrl+Shift+N")
+        fb.widgetForAction(m_format.actions()[-1]).setText("1. List")
+        fmt("Table…", "Insert table", self.insert_table, "Ctrl+Shift+T")
+        fmt("Figure", "Insert figure", lambda: self._ed("insert_block",
+            "\\begin{figure}[h]\n    \\centering\n    \\includegraphics[width=0.8\\linewidth]{¦}\n"
+            "    \\caption{Caption}\n    \\label{fig:label}\n\\end{figure}"), None)
+        m_format.addSeparator()
+        fb.addSeparator()
+        fmt("Indent Less", "Indent less (or Shift+Tab)", lambda: self._ed("indent_lines", more=False), "Ctrl+[")
+        fb.widgetForAction(m_format.actions()[-1]).setText("⇤")
+        fmt("Indent More", "Indent more (or Tab with a selection)", lambda: self._ed("indent_lines", more=True), "Ctrl+]")
+        fb.widgetForAction(m_format.actions()[-1]).setText("⇥")
+        m_format.addSeparator()
+        fmt("To Uppercase", "To uppercase", lambda: self._ed("change_case", upper=True), "Ctrl+U", bar=False)
+        fmt("To Lowercase", "To lowercase", lambda: self._ed("change_case", upper=False), "Ctrl+Shift+U", bar=False)
+
         tb.addSeparator()
-        act("▶ Compile", self.compile, "Ctrl+Return", m_build, True)
+        a = act("▶ Compile", self.compile, None, m_build, True)
+        a.setShortcuts([QKeySequence("Ctrl+Return"), QKeySequence("Ctrl+.")])
         exp = QAction("Export PDF", self)
         exp.setToolTip("Export PDF: save a copy with your file name, title and authors (Ctrl+E)")
         exp.triggered.connect(self.export_pdf)
@@ -1629,7 +1950,12 @@ class MainWindow(QMainWindow):
             "Ctrl+PgDown", m_view)
         act("Previous Tab", lambda: self.tabs.setCurrentIndex((self.tabs.currentIndex() - 1) % max(1, self.tabs.count())),
             "Ctrl+PgUp", m_view)
-        act("Show/Hide Project Tree", self.toggle_tree, "Ctrl+B", m_view)
+        act("Show/Hide Project Tree", self.toggle_tree, "Ctrl+Shift+E", m_view)
+        self.format_toolbar_action = QAction("Show Formatting Toolbar", self, checkable=True)
+        self.format_toolbar_action.setChecked(self.settings.value("formatBar", "true") == "true")
+        self.format_toolbar_action.toggled.connect(self._toggle_format_bar)
+        m_view.addAction(self.format_toolbar_action)
+        self.format_bar.setVisible(self.format_toolbar_action.isChecked())
         act("Show/Hide Problems Panel", self.toggle_bottom, "Ctrl+Shift+M", m_view)
         m_view.addSeparator()
         m_theme = m_view.addMenu("Theme")
@@ -1792,6 +2118,72 @@ class MainWindow(QMainWindow):
             ed.number_area.update()
         self.find_bar._update_count(self.current_editor())
         self.status.showMessage(f"Theme: {mode.capitalize()}", 2000)
+
+    def _ed(self, method, *args, **kwargs):
+        """Run an editing command on the current editor tab (if any) and keep focus there."""
+        ed = self.current_editor()
+        if ed is None:
+            return
+        getattr(ed, method)(*args, **kwargs)
+        ed.setFocus()
+
+    def _toggle_format_bar(self, on):
+        self.format_bar.setVisible(on)
+        self.settings.setValue("formatBar", "true" if on else "false")
+
+    def save_and_compile(self):
+        """Ctrl+S, like Overleaf: save everything and compile."""
+        self.save_all()
+        self.status.showMessage("Saved", 1500)
+        if self.main:
+            self.compile()
+
+    def go_to_line(self):
+        ed = self.current_editor()
+        if ed is None:
+            return
+        n = ed.blockCount()
+        line, ok = QInputDialog.getInt(self, "Go to Line", f"Line (1–{n}):", ed.textCursor().blockNumber() + 1, 1, n)
+        if ok:
+            ed.goto_line(line)
+
+    def insert_link(self):
+        ed = self.current_editor()
+        if ed is None:
+            return
+        text = ed.textCursor().selectedText().replace("\u2029", " ")
+        url, ok = QInputDialog.getText(self, "Insert Link", "URL:", text="https://")
+        if not ok or not url.strip():
+            return
+        ed.wrap_text("\\href{" + url.strip() + "}{", "}", placeholder=text or url.strip())
+        ed.setFocus()
+
+    def insert_table(self):
+        ed = self.current_editor()
+        if ed is None:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Insert Table")
+        form = QFormLayout(dlg)
+        rows, cols = QSpinBox(), QSpinBox()
+        for sp, v in ((rows, int(self.settings.value("tableRows", 3))), (cols, int(self.settings.value("tableCols", 3)))):
+            sp.setRange(1, 50)
+            sp.setValue(v)
+        form.addRow("Rows:", rows)
+        form.addRow("Columns:", cols)
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.button(QDialogButtonBox.Ok).setText("Insert")
+        box.accepted.connect(dlg.accept)
+        box.rejected.connect(dlg.reject)
+        form.addRow(box)
+        rows.setFocus()
+        rows.selectAll()
+        if dlg.exec() != QDialog.Accepted:
+            return
+        self.settings.setValue("tableRows", rows.value())
+        self.settings.setValue("tableCols", cols.value())
+        ed.insert_table(rows.value(), cols.value())
+        ed.setFocus()
 
     def toggle_bottom(self):
         self.bottom_hidden = not self.bottom_hidden
