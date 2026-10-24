@@ -3128,7 +3128,7 @@ class MainWindow(QMainWindow):
             QApplication.instance().quit()
 
 
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.1.0"
 
 
 def resource_path(*parts):

@@ -5,6 +5,8 @@ Write upcoming changes under **Unreleased**; `release.ps1` turns that section in
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-24
+
 ### Added
 - **Overleaf's keyboard shortcuts**: `Ctrl+B` bold, `Ctrl+I` italics (press again to undo), `Ctrl+D` delete line, `Ctrl+Shift+D` duplicate, `Alt+↑/↓` move lines, `Alt+Shift+↑/↓` copy lines, `Ctrl+U`/`Ctrl+Shift+U` upper/lower case, `Ctrl+]`/`Ctrl+[` and `Tab`/`Shift+Tab` (with a selection) to indent, `Ctrl+Shift+L` go to line, `Ctrl+G`/`Ctrl+Shift+G` find next/previous, and `Ctrl+S` / `Ctrl+.` to compile.
 - **Formatting toolbar** above the editor and a new **Format** menu, like Overleaf's toolbar: bold, italics, inline/display math, link, bullet list, numbered list, table and figure. Lists turn the selected lines into `\item`s; *Table* asks for rows and columns. Shortcuts for the toolbar-only actions: `Ctrl+M` math, `Ctrl+K` link, `Ctrl+Shift+I` bullet list, `Ctrl+Shift+N` numbered list, `Ctrl+Shift+T` table. These avoid `Ctrl+Shift+7/8` and `Ctrl+Alt`, which clash with `/` and AltGr characters on many non-US keyboards.
