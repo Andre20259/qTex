@@ -26,7 +26,7 @@ import tempfile
 import time
 import unicodedata
 
-from PySide6.QtCore import (QBuffer, QByteArray, QDir, QEvent, QFile, QObject,
+from PySide6.QtCore import (QBuffer, QByteArray, QDir, QEvent, QFile, QLocale, QObject,
                             QFileSystemWatcher, QIODevice, QPointF, QProcess,
                             QProcessEnvironment, QRect, QRectF,
                             QRegularExpression, QSettings, QSize,
@@ -1482,6 +1482,354 @@ class ExportDialog(QDialog):
 
 
 # --------------------------------------------------------------------------- #
+#  Word count
+# --------------------------------------------------------------------------- #
+# Words: letters/digits, keeping "don't", "well-known" and "3,14"/"3.14" as one word each.
+_WORD_RE = re.compile(r"\d+(?:[.,]\d+)+|[^\W_]+(?:['’\-][^\W_]+)*")
+_COMMENT_RE = re.compile(r"(?<!\\)%[^\n]*")
+_INCLUDE_RE = re.compile(r"\\(?:input|include|subfile)\s*\{([^}]*)\}")
+_VERB_RE = re.compile(r"\\verb\*?([^\sA-Za-z*])(.*?)\1")
+
+_HEADING_CMDS = ("part", "chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph",
+                 "addchap", "addsec", "frametitle", "framesubtitle")
+_TITLE_CMDS = ("title", "subtitle", "author", "date", "institute", "affil", "affiliation")
+_FOOTNOTE_CMDS = ("footnote", "footnotetext", "marginpar", "marginnote")
+_CAPTION_CMDS = {"caption": 0, "subcaption": 0, "captionof": 1}      # value: leading args to skip
+_SKIP_ENVS = ("verbatim", "verbatim*", "Verbatim", "lstlisting", "minted", "comment", "tikzpicture",
+              "pgfpicture", "filecontents", "filecontents*", "forest", "circuitikz", "algorithmic")
+_MATH_ENVS = tuple(e + star for e in ("equation", "align", "gather", "multline", "eqnarray", "displaymath",
+                                      "flalign", "alignat", "dmath", "math") for star in ("", "*"))
+_TABLE_ENVS = ("tabular", "tabular*", "tabularx", "longtable", "tabu", "tblr", "longtblr", "supertabular")
+# Arguments right after \begin{env} that aren't text (column specs, widths...)
+_ENV_ARGS = {"tabular": 1, "tabular*": 2, "tabularx": 2, "longtable": 1, "tabu": 1, "tblr": 1, "longtblr": 1,
+             "supertabular": 1, "array": 1, "minipage": 1, "multicols": 1, "multicols*": 1, "wrapfigure": 2,
+             "wraptable": 2, "subfigure": 1, "subtable": 1, "adjustbox": 1, "thebibliography": 1,
+             "alignat": 1, "alignat*": 1, "otherlanguage": 1, "otherlanguage*": 1, "column": 1}
+# Commands whose first N arguments aren't counted as words (references, URLs, settings, layout...)
+_COUNT_DROP = dict(_DROP_ARGS, **{
+    "input": 0, "eqref": 1, "pageref": 1, "autoref": 1, "cref": 1, "Cref": 1, "nameref": 1, "vref": 1,
+    "citep": 1, "citet": 1, "citeauthor": 1, "citeyear": 1, "parencite": 1, "textcite": 1, "autocite": 1,
+    "footcite": 1, "nocite": 1, "url": 1, "include": 1, "includeonly": 1, "subfile": 1, "import": 2,
+    "bibliography": 1, "bibliographystyle": 1, "addbibresource": 1, "usepackage": 1, "RequirePackage": 1,
+    "documentclass": 1, "setcounter": 2, "addtocounter": 2, "newcommand": 2, "renewcommand": 2,
+    "providecommand": 2, "newenvironment": 3, "renewenvironment": 3, "DeclareMathOperator": 2,
+    "hypersetup": 1, "geometry": 1, "pagestyle": 1, "thispagestyle": 1, "pagenumbering": 1,
+    "graphicspath": 1, "newcolumntype": 2, "multicolumn": 2, "multirow": 2, "cline": 1, "cmidrule": 1,
+    "titlegraphic": 1, "lstinputlisting": 1, "inputminted": 2, "selectlanguage": 1, "hspace*": 1,
+    "vspace*": 1, "linespread": 1, "definecolor": 3, "rowcolor": 1, "cellcolor": 1, "arrayrulecolor": 1,
+    "SetKwInOut": 2, "bibitem": 1,
+})
+_COUNT_DROP.pop("input")
+_COUNT_DROP_RE = re.compile(r"\\(" + "|".join(sorted(map(re.escape, _COUNT_DROP), key=len, reverse=True))
+                            + r")(?![A-Za-z])\*?")
+_BEGIN_END_RE = re.compile(r"\\(begin|end)\s*\{([^}]*)\}")
+
+
+def _skip_args(s, j, n, take_optional=True):
+    """From index j, skip optional [..] args and n {..} args; return the index after them."""
+    for _ in range(n):
+        k = j
+        while k < len(s) and (s[k].isspace() or (take_optional and s[k] == "[")):
+            if s[k] == "[":
+                close = s.find("]", k)
+                k = close + 1 if close >= 0 else len(s)
+            else:
+                k += 1
+        if k < len(s) and s[k] == "{":
+            j = _braced(s, k)[1]
+        else:
+            break
+    return j
+
+
+def _drop_command_args(s):
+    out, i = [], 0
+    for m in _COUNT_DROP_RE.finditer(s):
+        if m.start() < i:
+            continue
+        out.append(s[i:m.start()])
+        out.append(" ")
+        i = _skip_args(s, m.end(), _COUNT_DROP[m.group(1)])
+    out.append(s[i:])
+    return "".join(out)
+
+
+def _extract_cmds(s, names):
+    """Remove \\name[..]{text} (after skipping names[name] leading args); return (rest, [text, ...])."""
+    pat = re.compile(r"\\(" + "|".join(sorted(map(re.escape, names), key=len, reverse=True)) + r")(?![A-Za-z])\*?")
+    out, found, i = [], [], 0
+    for m in pat.finditer(s):
+        if m.start() < i:
+            continue
+        j = _skip_args(s, m.end(), names[m.group(1)])
+        k = j
+        while k < len(s) and (s[k].isspace() or s[k] == "["):     # optional short title, e.g. \section[short]{long}
+            if s[k] == "[":
+                close = s.find("]", k)
+                k = close + 1 if close >= 0 else len(s)
+            else:
+                k += 1
+        if k < len(s) and s[k] == "{":
+            content, end = _braced(s, k)
+            found.append(content)
+        else:
+            end = m.end()
+        out.append(s[i:m.start()])
+        out.append(" ")
+        i = end
+    out.append(s[i:])
+    return "".join(out), found
+
+
+def _extract_envs(s, names):
+    """Remove \\begin{env}...\\end{env} for env in names (outermost, nesting-aware); return (rest, [body, ...])."""
+    names = set(names)
+    out, found, i = [], [], 0
+    stack = []   # (name, start_of_begin, start_of_body)
+    for m in _BEGIN_END_RE.finditer(s):
+        kind, name = m.group(1), m.group(2).strip()
+        if name not in names or m.start() < i:
+            continue
+        if kind == "begin":
+            body_start = _skip_args(s, m.end(), _ENV_ARGS.get(name, 0))
+            stack.append((name, m.start(), body_start))
+        elif stack and stack[-1][0] == name:
+            name0, b_start, body_start = stack.pop()
+            if not stack:                                   # outermost: cut it out
+                found.append(s[body_start:m.start()])
+                out.append(s[i:b_start])
+                out.append(" ")
+                i = m.end()
+    if stack:                                               # unterminated: take everything after it
+        name0, b_start, body_start = stack[0]
+        found.append(s[body_start:])
+        out.append(s[i:b_start])
+        i = len(s)
+    out.append(s[i:])
+    return "".join(out), found
+
+
+def _plain_words(s):
+    """Number of words in a LaTeX fragment (math already removed)."""
+    s = _VERB_RE.sub(" ", s)
+    s = _drop_command_args(s)
+
+    # \begin{env}[options]{args} / \end{env}: drop the markers, placement options like [h] and
+    # non-text arguments (column specs, widths...)
+    out, i = [], 0
+    for m in _BEGIN_END_RE.finditer(s):
+        if m.start() < i:
+            continue
+        out.append(s[i:m.start()])
+        out.append(" ")
+        i = m.end()
+        if m.group(1) == "begin":
+            while True:                                   # [h], [width=..] etc.
+                k = i
+                while k < len(s) and s[k] in " \t":
+                    k += 1
+                if k < len(s) and s[k] == "[":
+                    close = s.find("]", k)
+                    i = close + 1 if close >= 0 else len(s)
+                else:
+                    break
+            i = _skip_args(s, i, _ENV_ARGS.get(m.group(2).strip(), 0))
+    out.append(s[i:])
+    s = "".join(out)
+    s = re.sub(r"\\item\s*\[", " [", s)          # \item[label] -> label counts
+    return len(_WORD_RE.findall(latex_to_text(s)))
+
+
+_MATH_INLINE_RE = re.compile(r"(?<!\\)\$(?:\\.|[^$\\])+?(?<!\\)\$|\\\((?:.|\n)*?\\\)")
+_MATH_DISPLAY_RE = re.compile(r"(?<!\\)\$\$(?:.|\n)*?(?<!\\)\$\$|\\\[(?:.|\n)*?\\\]")
+
+
+def count_tex(text, mode="body"):
+    """Word counts of one piece of LaTeX. mode: 'body', 'preamble' (only \\title etc.) or 'title'."""
+    # Each group's pieces are joined and counted at once (word counts add up; this is much faster)
+    c = {k: 0 for k in ("text", "headings", "title", "captions", "footnotes", "tables", "bib",
+                        "math_inline", "math_display")}
+    text = _COMMENT_RE.sub("", text)
+    text, _skipped = _extract_envs(text, _SKIP_ENVS)
+    text = _VERB_RE.sub(" ", text)
+    if mode == "title":
+        text = _MATH_DISPLAY_RE.sub(" ", text)
+        c["title"] = _plain_words(_MATH_INLINE_RE.sub(" ", text))
+        return c
+    text, parts = _extract_cmds(text, {n: 0 for n in _TITLE_CMDS})
+    c["title"] += _plain_words(_MATH_INLINE_RE.sub(" ", "\n".join(parts)))
+    if mode == "preamble":
+        return c
+    text, parts = _extract_envs(text, ("titlepage",))
+    c["title"] += count_tex("\n".join(parts), "title")["title"] if parts else 0
+    text, parts = _extract_envs(text, ("thebibliography",))
+    c["bib"] = _plain_words("\n".join(parts))
+    text, parts = _extract_envs(text, _MATH_ENVS)
+    c["math_display"] += len(parts)
+    text, n = _MATH_DISPLAY_RE.subn(" ", text)
+    c["math_display"] += n
+    text, n = _MATH_INLINE_RE.subn(" ", text)
+    c["math_inline"] += n
+    text, parts = _extract_cmds(text, {n: 0 for n in _FOOTNOTE_CMDS})
+    c["footnotes"] = _plain_words("\n".join(parts))
+    text, parts = _extract_cmds(text, _CAPTION_CMDS)
+    c["captions"] = _plain_words("\n".join(parts))
+    text, parts = _extract_cmds(text, {n: 0 for n in _HEADING_CMDS})
+    c["headings"] = _plain_words("\n".join(parts))
+    text, parts = _extract_envs(text, _TABLE_ENVS)
+    c["tables"] = _plain_words("\n".join(parts))
+    c["text"] = _plain_words(text)
+    return c
+
+
+def count_project_words(main_path, read):
+    """Count the whole project starting at the main file, following \\input / \\include.
+    read(path) returns a file's current text (open tabs included). Returns (totals, [(path, counts)])."""
+    root = os.path.dirname(main_path)
+    seen, per_file = set(), []
+
+    def resolve(name, from_dir):
+        name = name.strip()
+        for base in (root, from_dir):
+            for cand in (name, name + ".tex"):
+                p = os.path.normpath(os.path.join(base, cand))
+                if os.path.isfile(p):
+                    return p
+        return None
+
+    def spans_of(text, env):
+        spans, depth, start = [], 0, 0
+        for m in _BEGIN_END_RE.finditer(text):
+            if m.group(2).strip() != env:
+                continue
+            if m.group(1) == "begin":
+                if depth == 0:
+                    start = m.start()
+                depth += 1
+            elif depth:
+                depth -= 1
+                if depth == 0:
+                    spans.append((start, m.end()))
+        return spans
+
+    def process_part(path, text, mode, counts):
+        title_spans = spans_of(text, "titlepage")
+        for m in _INCLUDE_RE.finditer(text):
+            child = resolve(m.group(1), os.path.dirname(path))
+            if child:
+                inside_title = any(a <= m.start() < b for a, b in title_spans)
+                process(child, "title" if (mode == "title" or inside_title) else mode)
+        part = count_tex(_INCLUDE_RE.sub(" ", text), mode)
+        for k, v in part.items():
+            counts[k] = counts.get(k, 0) + v
+
+    def process(path, mode):
+        key = norm(path)
+        if key in seen:
+            return
+        seen.add(key)
+        try:
+            text = _COMMENT_RE.sub("", read(path))
+        except OSError:
+            return
+        counts = {}
+        per_file.append((path, counts))
+        m = re.search(r"\\begin\s*\{document\}", text)
+        if m:
+            process_part(path, text[:m.start()], "preamble", counts)
+            body = text[m.end():]
+            e = re.search(r"\\end\s*\{document\}", body)
+            process_part(path, body[:e.start()] if e else body, mode if mode != "preamble" else "body", counts)
+        else:
+            process_part(path, text, mode, counts)
+
+    process(main_path, "body")
+    totals = {}
+    for _p, counts in per_file:
+        for k, v in counts.items():
+            totals[k] = totals.get(k, 0) + v
+    return totals, per_file
+
+
+def total_words(c):
+    """Every counted word: main text + headings + title page + captions + footnotes + tables."""
+    return sum(c.get(k, 0) for k in ("text", "headings", "title", "captions", "footnotes", "tables"))
+
+
+class WordCountDialog(QDialog):
+    ROWS = (("text", "Main text"), ("headings", "Headings"), ("title", "Title page (title, authors, date)"),
+            ("captions", "Captions"), ("footnotes", "Footnotes"), ("tables", "Tables"))
+
+    def __init__(self, parent, totals, per_file, root, selection_words=None):
+        super().__init__(parent)
+        self.setWindowTitle("Word Count")
+        loc = QLocale()
+        n = lambda v: loc.toString(int(v))
+        lay = QVBoxLayout(self)
+
+        def table(rows, bold_rows=()):
+            t = QTreeWidget()
+            t.setColumnCount(2)
+            t.setHeaderHidden(True)
+            t.setRootIsDecorated(False)
+            t.setSelectionMode(QAbstractItemView.NoSelection)
+            t.setFocusPolicy(Qt.NoFocus)
+            t.header().setSectionResizeMode(0, QHeaderView.Stretch)
+            t.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+            t.header().setStretchLastSection(False)
+            bold = QFont()
+            bold.setBold(True)
+            for i, (label, value) in enumerate(rows):
+                it = QTreeWidgetItem(t, [label, value])
+                it.setTextAlignment(1, Qt.AlignRight | Qt.AlignVCenter)
+                if i in bold_rows:
+                    it.setFont(0, bold)
+                    it.setFont(1, bold)
+            t.setFixedHeight(t.sizeHintForRow(0) * len(rows) + 2 * t.frameWidth() + 4)
+            return t
+
+        total = total_words(totals)
+        rows = [("Total", n(total))] + [(label, n(totals.get(key, 0))) for key, label in self.ROWS]
+        lay.addWidget(QLabel("<b>Words</b>"))
+        lay.addWidget(table(rows, bold_rows=(0, 1)))
+        hint = QLabel("<small><b>Main text</b> is the total without the title page, headings, captions, "
+                      "footnotes and tables.</small>")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        extra = [("Inline math (not counted as words)", n(totals.get("math_inline", 0))),
+                 ("Displayed equations (not counted)", n(totals.get("math_display", 0)))]
+        if totals.get("bib"):
+            extra.append(("Bibliography words (not counted)", n(totals["bib"])))
+        lay.addWidget(table(extra))
+
+        files = [(p, c) for p, c in per_file if total_words(c)]
+        if len(files) > 1:
+            lay.addWidget(QLabel("<b>Main text per file</b>"))
+            rows = []
+            for p, c in files:
+                try:
+                    rel = os.path.relpath(p, root)
+                except ValueError:
+                    rel = os.path.basename(p)
+                rows.append((rel.replace(os.sep, "/"), n(c.get("text", 0))))
+            t = table(rows)
+            if len(rows) > 12:
+                t.setFixedHeight(t.sizeHintForRow(0) * 12 + 6)
+            lay.addWidget(t)
+        if selection_words is not None:
+            lay.addWidget(QLabel(f"<b>Selection:</b> {n(selection_words)} words"))
+        note = QLabel("<small>Counted from the LaTeX source of the whole project (following \\input and "
+                      "\\include, with unsaved changes), so it can differ slightly from the PDF.</small>")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        box = QDialogButtonBox(QDialogButtonBox.Close)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+        self.resize(420, self.sizeHint().height())
+
+
+# --------------------------------------------------------------------------- #
 #  Updates from GitHub Releases
 # --------------------------------------------------------------------------- #
 GITHUB_REPO = "Andre20259/qTex"
@@ -1718,6 +2066,7 @@ class MainWindow(QMainWindow):
         self.tabs.setDocumentMode(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
         self.tabs.currentChanged.connect(lambda _i: self._refresh_ui())
+        self.tabs.currentChanged.connect(lambda _i: self._word_totals and self._update_words_label())
         self.welcome = self._build_welcome()
         self.center = QStackedWidget()
         self.center.addWidget(self.welcome)
@@ -1784,6 +2133,15 @@ class MainWindow(QMainWindow):
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
+        self.words_btn = QToolButton()
+        self.words_btn.setAutoRaise(True)
+        self.words_btn.setToolTip("Word count. Click for details.")
+        self.words_btn.clicked.connect(self.show_word_count)
+        self.words_btn.hide()
+        self.status.addPermanentWidget(self.words_btn)
+        self._word_totals = None
+        self._words_timer = QTimer(self, singleShot=True, interval=1200)
+        self._words_timer.timeout.connect(self._recount_words)
         self.main_label = QLabel()
         self.status.addPermanentWidget(self.main_label)
 
@@ -1874,6 +2232,7 @@ class MainWindow(QMainWindow):
         a = act("Find Previous", lambda: self.find_bar.find_prev(), None, m_edit)
         a.setShortcuts([QKeySequence(QKeySequence.FindPrevious), QKeySequence("Ctrl+Shift+G")])
         act("Go to Line…", self.go_to_line, "Ctrl+Shift+L", m_edit)
+        act("Word Count…", self.show_word_count, None, m_edit)
         m_edit.addSeparator()
         act("Delete Line", lambda: self._ed("delete_lines"), "Ctrl+D", m_edit)
         act("Duplicate", lambda: self._ed("duplicate"), "Ctrl+Shift+D", m_edit)
@@ -2339,6 +2698,7 @@ class MainWindow(QMainWindow):
         if self.root and self.main:
             self.settings.setValue(settings_key("main", self.root), self.main)
         self._refresh_ui()
+        QTimer.singleShot(200, self._recount_words)   # (not _words_timer.start(n): that would change its interval)
         if compile_if_needed and self.main:
             pdf = self._pdf_path()
             if pdf and os.path.exists(pdf):
@@ -2498,6 +2858,7 @@ class MainWindow(QMainWindow):
             ed.set_error_lines(self.error_map.get(norm(path), ()))
             ed.document().modificationChanged.connect(lambda _m, e=ed: self._update_tab(e))
             ed.textChanged.connect(self._on_text_changed)
+            ed.selectionChanged.connect(self._update_words_label)
             self.tabs.addTab(ed, os.path.basename(path))
             self.watcher.addPath(path)
             self._update_tab(ed)
@@ -2603,7 +2964,54 @@ class MainWindow(QMainWindow):
     def _pdf_path(self):
         return os.path.splitext(self.main)[0] + ".pdf" if self.main else None
 
+    # ------------------------------------------------------------------ word count
+    def _read_for_count(self, path):
+        ed = self.find_editor(path)
+        return ed.toPlainText() if ed is not None else read_text(path)
+
+    def _recount_words(self):
+        if not self.main:
+            self._word_totals = None
+        else:
+            try:
+                self._word_totals, self._word_files = count_project_words(self.main, self._read_for_count)
+            except Exception:
+                self._word_totals = None
+        self._update_words_label()
+
+    def _selection_words(self):
+        ed = self.current_editor()
+        if ed is None or not ed.textCursor().hasSelection():
+            return None
+        return total_words(count_tex(ed.textCursor().selectedText().replace("\u2029", "\n")))
+
+    def _update_words_label(self):
+        if not self._word_totals:
+            self.words_btn.hide()
+            return
+        loc = QLocale()
+        main_words = loc.toString(self._word_totals.get("text", 0))
+        sel = self._selection_words()
+        self.words_btn.setText(f"{loc.toString(sel)} of {main_words} words" if sel is not None
+                               else f"{main_words} words")
+        self.words_btn.setToolTip(f"Main text: {main_words} words · Total: "
+                                  f"{loc.toString(total_words(self._word_totals))}. Click for details.")
+        self.words_btn.show()
+
+    def show_word_count(self):
+        if not self.main:
+            QMessageBox.information(self, "Word Count", "Open a project with a main file first.")
+            return
+        self._words_timer.stop()
+        self._recount_words()
+        if not self._word_totals:
+            QMessageBox.warning(self, "Word Count", "Couldn't count the words in this project.")
+            return
+        WordCountDialog(self, self._word_totals, self._word_files, self.root or os.path.dirname(self.main),
+                        self._selection_words()).exec()
+
     def _on_text_changed(self):
+        self._words_timer.start()
         if self.auto.isChecked() and self.main:
             self.typing_timer.start()
 

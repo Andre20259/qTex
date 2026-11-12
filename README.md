@@ -23,6 +23,7 @@ Windows may say *"Windows protected your PC"* the first time, because the app is
 - **Live preview.** The PDF recompiles shortly after you stop typing, in any file, and keeps its scroll position.
 - **No Perl or latexmk needed.** The built-in build runs LaTeX, BibTeX or Biber, makeindex, and reruns LaTeX until references settle. latexmk is optional.
 - **Problems panel.** Errors and warnings with the file and line they came from. Click one to jump there.
+- **Word count**: total and main text (without title, authors, headings, captions...), live in the status bar.
 - **SyncTeX, both ways.** `Ctrl+J` shows where the cursor's line is in the PDF. Turn on *Highlight source* and point at the PDF to see the matching source line highlighted, or `Ctrl+click` to jump there.
 - Light and dark themes; pdflatex, xelatex or lualatex; syntax highlighting; line numbers; comment toggling; file management in the tree; open tabs restored per project.
 
@@ -40,6 +41,7 @@ Windows may say *"Windows protected your PC"* the first time, because the app is
 - **Light or dark.** *View → Theme* switches between Light, Dark and System (follows Windows). The choice is remembered.
 - **Export PDF** (`Ctrl+E`): choose the folder, title and authors; QTeX saves `<title>.pdf` there with the title and authors set as its properties (what Windows Explorer and PDF readers show). Title and authors start from `\title{}` and `\author{}` (or hyperref's `pdftitle`/`pdfauthor`), and your edits are remembered per project.
 - **Overleaf shortcuts and toolbar.** The same keys as Overleaf: `Ctrl+B` bold, `Ctrl+I` italics, `Ctrl+D` delete line, `Alt+↑/↓` move lines, `Ctrl+Shift+L` go to line, `Ctrl+S` save and compile, and more. A formatting toolbar above the editor (and the *Format* menu) inserts bold, italics, math, links, bullet and numbered lists, tables and figures. Select some lines and click *• List* to turn them into `\item`s.
+- **Word count** in the status bar (main text, or the selection), and *Edit → Word Count…* for the breakdown: total, main text without the title page, headings, captions, footnotes and tables, each of those separately, and per file. Counts the whole project, unsaved changes included.
 - **Right-click in the tree** to create files and folders, rename, delete (to the recycle bin), copy a path relative to the main file (for `\input`/`\includegraphics`), or show it in Explorer. Images and other non-text files open in your default app.
 - Open tabs, engine and main file are restored when you reopen a project. *File → Recent Projects* lists the last ten.
 - Files changed by another program reload automatically if you have no unsaved edits in them.
