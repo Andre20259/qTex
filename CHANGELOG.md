@@ -5,6 +5,8 @@ Write upcoming changes under **Unreleased**; `release.ps1` turns that section in
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-12
+
 ### Added
 - **Word count.** The status bar shows the main text's word count and updates a moment after you stop typing; with text selected it shows e.g. "42 of 3 120 words". Click it, or use *Edit → Word Count…*, for the details: **Total**, **Main text** (without the title page, headings, captions, footnotes and tables), each of those separately, equations and bibliography (not counted as words), and the main text per file. It counts the whole project, following `\input`/`\include`, including unsaved changes. A custom `titlepage` counts as title page, and math, code, comments and `\cite`/`\ref` keys are left out.
 
